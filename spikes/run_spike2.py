@@ -161,8 +161,7 @@ def run_agent(exe: Path, workdir: Path, head_hex: str, nt_path: str,
             # lines) never left the artifact.
             if isinstance(payload, dict):
                 spike = payload.get("spike")
-                if spike == "stage1" and \
-                        payload.get("event") != "sub1-collateral-read":
+                if spike == "stage1":
                     print("    spike2: stage1 " + str(payload.get("event")) +
                           " " + str(payload.get("detail")), flush=True)
                 elif spike in ("lic_copy", "lic_copy_missing", "lic_mapped",

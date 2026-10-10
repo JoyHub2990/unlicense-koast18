@@ -1821,8 +1821,35 @@ function stage1OnLicensePageAccess(details) {
     if (stage1IsSystemModule(from)) {
         stage1.collateralReads = (stage1.collateralReads || 0) + 1;
         if (stage1.collateralReads <= 5) {
+            /* Log the raw stack window and tag every slot that points into a
+             * non-system module. The protection may read its license copy
+             * through the CRT's memcpy/memmove, which lives in System32 -- the
+             * read would then be discarded as "collateral" even though its
+             * caller is the protection. The caller's return address is the
+             * only thing that distinguishes the two, and Thread.backtrace
+             * cannot be used here (it kills the target), so read the slots. */
+            const frame = [];
+            const sp = ctx[SP_REG];
+            for (let off = 0; off <= 0x60; off += PTR_SIZE) {
+                try {
+                    const value = sp.add(off).readPointer();
+                    let tag = "";
+                    if (!value.isNull()) {
+                        const module = Process.findModuleByAddress(value);
+                        if (module === null) {
+                            tag = " <private>";
+                        } else if (!stage1IsSystemModule(module)) {
+                            tag = " " + module.name;
+                        }
+                    }
+                    frame.push("[sp+" + off.toString(16) + "]=" + value + tag);
+                } catch (e) {
+                    /* unreadable slot */
+                }
+            }
             stage1Log("sub1-collateral-read", "pc=" + pc + " (" +
-                from.name + ") addr=" + address);
+                from.name + ") addr=" + address + " frame: " +
+                frame.join(" "));
         }
         /* Skip it and keep watching: re-arm once the retry has completed. */
         scheduleRearm();
