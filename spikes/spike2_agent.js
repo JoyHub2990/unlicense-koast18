@@ -1341,21 +1341,46 @@ function stage1BackInRsaExptmod(context) {
             return address.toString();
         }).join(" "));
     for (const destination of destinations) {
-        setTimeout(function () {
-            try {
-                plan.hooks.push(Interceptor.attach(destination, {
-                    onEnter: function () {
-                        try {
-                            stage1CallCandidate(this.context, destination);
-                        } catch (e) {
-                            stage1Log("candidate-error", String(e));
-                        }
+        /* Attach synchronously. The original wrapped this in
+         * setTimeout(..., 0), which is the wrong tool here: we are inside an
+         * Interceptor onEnter on the target thread (not a Stalker callout and
+         * not the exception handler), and rsa_exptmod calls mp_exptmod
+         * immediately after the read that got us here -- so a deferred attach
+         * loses the first call and, with it, the whole key-swap sequence
+         * (observed `calls=2` against `dec_sections=3`, completion branch
+         * unreachable). Keep the timeout only as a fallback. */
+        try {
+            plan.hooks.push(Interceptor.attach(destination, {
+                onEnter: function () {
+                    try {
+                        stage1CallCandidate(this.context, destination);
+                    } catch (e) {
+                        stage1Log("candidate-error", String(e));
                     }
-                }));
-            } catch (e) {
-                stage1Log("candidate-hook-failed", String(e));
-            }
-        }, 0);
+                }
+            }));
+            stage1Log("sub3-hooked-sync", destination.toString());
+        } catch (e) {
+            stage1Log("candidate-hook-failed", String(e) + " for " +
+                destination);
+            setTimeout(function () {
+                try {
+                    plan.hooks.push(Interceptor.attach(destination, {
+                        onEnter: function () {
+                            try {
+                                stage1CallCandidate(this.context, destination);
+                            } catch (err) {
+                                stage1Log("candidate-error", String(err));
+                            }
+                        }
+                    }));
+                    stage1Log("sub3-hooked-deferred",
+                        destination.toString());
+                } catch (err) {
+                    stage1Log("candidate-hook-failed", String(err));
+                }
+            }, 0);
+        }
     }
 }
 
@@ -1456,6 +1481,30 @@ function stage1CallCandidate(context, destination) {
         return;
     }
     stage1.callCount++;
+    /* Log the raw arguments of the first few calls BEFORE the swap, and
+     * whether each one is already one of our own mp_int structs. What
+     * distinguishes the protection's verify call from its decrypt calls is
+     * the only thing that can make completion robust when the number of calls
+     * does not match the dec_sections model (observed calls=2 against
+     * dec_sections=3, so `callCount > decSections` never fires). */
+    if (stage1.callCount <= 3) {
+        const rawKeys = stage1KeyMaterial();
+        const raw = [];
+        for (let i = 0; i < slots.length; i++) {
+            const value = slotRead(context, slots[i]);
+            let ours = "-";
+            if (rawKeys !== null) {
+                ours = (value.equals(rawKeys.key1.exp.struct) ||
+                        value.equals(rawKeys.key1.mod.struct)) ? "key1"
+                    : ((value.equals(rawKeys.key2.exp.struct) ||
+                        value.equals(rawKeys.key2.mod.struct)) ? "key2"
+                       : "foreign");
+            }
+            raw.push("arg" + i + "=" + value + "(" + ours + ")");
+        }
+        stage1Log("sub4-call-raw", "call#" + stage1.callCount + " " +
+            raw.join(" ") + " | " + described.join(" | "));
+    }
     if (stage1.callCount === 1) {
         stage1.mpExptmod = destination.toString();
         stage1.sub = 5;
