@@ -726,8 +726,20 @@ function startStage2(decLic) {
     } catch (e) {
         s2.decLicBuf = null;
     }
+    /* Take hash_3 from the *buffer*, not from the struct.
+     *
+     * dec_lic is the mp_int struct (used/alloc/sign at 0,4,8 and dp at 0x10), so
+     * dec_lic + 0x33 is 0x33 bytes past a 0x18-byte structure -- whatever it
+     * reads is unrelated to the licence. Rounds 35 and 37 both reported
+     * hash3=0x4000 from there, while the buffer identified from the struct's own
+     * dp field gave bufHash3=0x6501 in both runs, at different buffer addresses.
+     * A value that is stable across runs and allocations is a licence constant;
+     * a value read past the end of a struct is not. The cmp matcher keys on this
+     * value, so it was matching nothing. */
     try {
-        s2.hash3 = s2.decLic.add(HASH3_OFFSET).readU16();
+        s2.hash3 = s2.decLicBuf !== null
+            ? s2.decLicBuf.add(HASH3_OFFSET).readU16()
+            : s2.decLic.add(HASH3_OFFSET).readU16();
     } catch (e) {
         s2.hash3 = 0;
     }
@@ -1108,7 +1120,9 @@ function stage2ApplyCmp(context, site) {
      * harmless in the real flow, where the decrypted buffer is already
      * complete and stable. */
     try {
-        s2.hash3 = s2.decLic.add(HASH3_OFFSET).readU16();
+        s2.hash3 = s2.decLicBuf !== null
+            ? s2.decLicBuf.add(HASH3_OFFSET).readU16()
+            : s2.decLic.add(HASH3_OFFSET).readU16();
     } catch (e) {
         /* keep the previous value */
     }
