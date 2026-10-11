@@ -596,6 +596,7 @@ def ci_pass(args) -> int:
         # rate is what says whether the guard/landmark race is real or whether
         # the one hit was process-teardown noise.
         stage1_hits = 0
+        stage2_hits = 0
         for attempt in range(1, args.repeat + 1):
             tag = label if args.repeat == 1 else f"{label}#{attempt}"
             print(f"\n=== {tag}: {exe.name} (v{target['version']}) ===",
@@ -626,6 +627,20 @@ def ci_pass(args) -> int:
             # dead time (a non-hitting attempt burns the whole duration).
             if verdict["checks"].get("stage1-rsa-chain", {}).get("ok"):
                 stage1_hits += 1
+            # Stage 2's landmark is rarer than Stage 1's completion (round 24
+            # had five guard hits, round 26 none, on the same target), so
+            # stopping as soon as Stage 1 completes can cut the round off before
+            # any attempt reaches Stage 2. Let a caller ask to keep going until
+            # Stage 2 actually produces a result instead.
+            stage2_events = (run.get("stage2") or {}).get("events") or []
+            if any(event in ("bypass", "complete") for event in stage2_events):
+                stage2_hits += 1
+                print(f"  Stage 2 produced a result: {stage2_events}",
+                      flush=True)
+            if args.stop_after_stage2 and stage2_hits >= args.stop_after_stage2:
+                print(f"  {stage2_hits} Stage 2 result(s) collected; "
+                      f"stopping this target early", flush=True)
+                break
             if args.stop_after_hits and stage1_hits >= args.stop_after_hits:
                 print(f"  {stage1_hits} Stage 1 completion(s) collected; "
                       f"stopping this target early", flush=True)
@@ -682,6 +697,12 @@ def main() -> int:
                              "sweeping many: the remaining attempts are dead "
                              "time, and progress that lands on a different "
                              "sample each round cannot be built on.")
+    parser.add_argument("--stop-after-stage2", type=int, default=0,
+                        help="stop a target's attempts once N Stage 2 results "
+                             "(bypass/complete) have been collected (0 = run "
+                             "them all). Stage 2's landmark is rarer than "
+                             "Stage 1's completion, so stopping on Stage 1 can "
+                             "cut a round off before any attempt reaches it.")
     args = parser.parse_args()
 
     RESULTS.mkdir(exist_ok=True)
