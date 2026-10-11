@@ -809,9 +809,24 @@ function stage2OnGuardAccess(details) {
     s2.hits++;
     if (s2.hits <= 12) {
         const hctx = details.context || null;
+        let offsetText = "off=?";
+        if (s2.decLicBuf !== null) {
+            /* Signed distance from the decrypted buffer, so a hit can be read
+             * directly as "inside the buffer at +N" or "past the end by N".
+             * hash3At used to print the constant dec_lic + 0x33, which said
+             * nothing about where the protection actually read. */
+            try {
+                offsetText = "off=" + (address.sub(s2.decLicBuf).toInt32() >= 0
+                    ? "+" : "-") + "0x" + Math.abs(
+                    address.sub(s2.decLicBuf).toInt32()).toString(16);
+            } catch (e) {
+                offsetText = "off=?";
+            }
+        }
         stage2Log("guard-hit", "#" + s2.hits + " op=" + operation +
             " addr=" + address + " pc=" + (hctx === null ? "?" :
-                hctx[PC_REG]) + " hash3At=" + s2.decLic.add(HASH3_OFFSET) +
+                hctx[PC_REG]) + " " + offsetText +
+            " buf=" + s2.decLicBuf +
             " bufHash3At=" + (s2.decLicBuf === null ? "none" :
                 s2.decLicBuf.add(HASH3_OFFSET)));
     }
@@ -1888,7 +1903,7 @@ function stage1MpExptmodEnter(context) {
                  * argument-derived addresses have been ruled out (rounds
                  * 31/33). Runs on the JS thread -- scanning memory inside the
                  * hook would stall it. */
-                setTimeout(stage2LocateBufferByContent, 60);
+                setTimeout(stage2LocateBufferByContent, 25);
             } catch (e) {
                 stage1Log("stage2-start-failed", String(e));
             }
@@ -2367,7 +2382,7 @@ function stage1CallCandidate(context, destination) {
                  * argument-derived addresses have been ruled out (rounds
                  * 31/33). Runs on the JS thread -- scanning memory inside the
                  * hook would stall it. */
-                setTimeout(stage2LocateBufferByContent, 60);
+                setTimeout(stage2LocateBufferByContent, 25);
             } catch (e) {
                 stage1Log("stage2-start-failed", String(e));
             }
