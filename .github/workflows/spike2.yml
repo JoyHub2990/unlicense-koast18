@@ -42,6 +42,10 @@ on:
         description: "1 = swap in an exponent of 1, making the RSA decrypt the identity (the decrypted buffer becomes the licence file verbatim)"
         type: string
         default: "0"
+      guard_span:
+        description: "How far to widen Stage 2's guard ranges, hex (default 0x10000; widen to locate the buffer the protection actually reads)"
+        type: string
+        default: "0x10000"
       duration:
         description: "Seconds per attempt. The landmark, when it happens, shows up within ~45s; a longer window only buys dead time."
         type: string
@@ -65,7 +69,7 @@ concurrency:
   # run must not cancel a dispatched real-sample run (and two dispatches with
   # different targets are genuinely different work). Re-running the *same*
   # configuration still cancels the older attempt, which is the point.
-  group: spike2-${{ github.ref }}-${{ github.event_name }}-${{ inputs.targets_x86 }}-${{ inputs.targets_x64 }}-${{ inputs.modes_x64 }}-${{ inputs.repeat }}-${{ inputs.identity_key }}
+  group: spike2-${{ github.ref }}-${{ github.event_name }}-${{ inputs.targets_x86 }}-${{ inputs.targets_x64 }}-${{ inputs.modes_x64 }}-${{ inputs.repeat }}-${{ inputs.identity_key }}-${{ inputs.guard_span }}
   cancel-in-progress: true
 
 env:
@@ -226,6 +230,7 @@ jobs:
           # the decrypted buffer is the licence file verbatim (deterministic
           # content instead of re-rolling the plaintext lottery).
           STAGE1_IDENTITY_KEY: ${{ inputs.identity_key || '0' }}
+          STAGE2_GUARD_SPAN: ${{ inputs.guard_span || '0x10000' }}
         run: python spikes/run_spike2.py --ci --defer-tracing --repeat ${{ inputs.repeat || 1 }} --stop-after-hits ${{ inputs.stop_after_hits || 0 }} --stop-after-stage2 ${{ inputs.stop_after_stage2 || 0 }} --dummy results/spike2_dummy/regkey.dat --targets ${{ (matrix.python_arch == 'x86' && inputs.targets_x86) || (matrix.python_arch == 'x64' && inputs.targets_x64) || matrix.targets }} --duration ${{ inputs.duration || 90 }}
 
       - name: Upload spike 2 results

@@ -460,12 +460,18 @@ function stage2InGuardRange(s2, address) {
 function stage2GuardRange(pointer) {
     const pageSize = Process.pageSize;
     const page = pointer.and(ptr(pageSize - 1).not());
-    const cap = 0x10000;
+    /* Span is configurable: the default covers the containing allocation, and a
+     * diagnostic run can widen it to find out which addresses the protection
+     * actually touches (rounds 31/33: neither dec_lic nor the pre-call dp is
+     * touched at all, so the real output buffer is elsewhere in this heap). */
+    const cap = plan.guardSpan || 0x10000;
     let length = pageSize;
     const range = Process.findRangeByAddress(pointer);
     if (range !== null) {
         const span = range.base.add(range.size).sub(page);
         length = span.compare(cap) > 0 ? cap : span.toInt32();
+    } else if (cap > pageSize) {
+        length = cap;
     }
     return { start: page, length: length };
 }
@@ -716,7 +722,7 @@ function stage2OnGuardAccess(details) {
         return false;
     }
     s2.hits++;
-    if (s2.hits <= 6) {
+    if (s2.hits <= 12) {
         const hctx = details.context || null;
         stage2Log("guard-hit", "#" + s2.hits + " op=" + operation +
             " addr=" + address + " pc=" + (hctx === null ? "?" :
@@ -2963,6 +2969,9 @@ rpc.exports = {
          * identity and the decrypted buffer is the licence file verbatim. See
          * buildMpIntOne. */
         plan.identityKey = options.identityKey === true;
+        /* How far to widen Stage 2's guard ranges. Default 64KB; a diagnostic
+         * run widens it to locate the buffer the protection actually reads. */
+        plan.guardSpan = options.guardSpan || 0x10000;
         plan.mainModuleName = main.name;
         Process.setExceptionHandler(function (details) {
             try {

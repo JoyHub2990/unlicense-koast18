@@ -207,7 +207,9 @@ def run_agent(exe: Path, workdir: Path, head_hex: str, nt_path: str,
         "stage1CompleteAfter": int(os.environ.get("STAGE1_COMPLETE_AFTER", "0")),
         # Swap in an exponent of 1 so the protection's RSA decrypt becomes the
         # identity and the decrypted buffer is the licence file verbatim.
-        "identityKey": os.environ.get("STAGE1_IDENTITY_KEY") == "1"
+        "identityKey": os.environ.get("STAGE1_IDENTITY_KEY") == "1",
+        # How far to widen Stage 2's guard ranges (diagnostic).
+        "guardSpan": int(os.environ.get("STAGE2_GUARD_SPAN", "0x10000"), 16)
     })
     device.resume(pid)
     # Stalker only takes effect on a running thread. With --defer-tracing the
