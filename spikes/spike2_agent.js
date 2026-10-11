@@ -1372,11 +1372,15 @@ function stage1MpExptmodEnter(context) {
         /* Hand the decrypted buffer to Stage 2, which keys on the 2-byte
          * read of dec_lic + 0x33 (stage2.cpp's stage2::init). */
         if (stage1.decLic !== null && stage1.decLic !== undefined) {
+            stage1Log("stage2-handoff", "decLic=" + stage1.decLic);
             try {
                 startStage2(stage1.decLic);
+                stage1Log("stage2-armed", "sub=" + plan.stage2.sub);
             } catch (e) {
                 stage1Log("stage2-start-failed", String(e));
             }
+        } else {
+            stage1Log("stage2-skipped", "decLic=" + stage1.decLic);
         }
     }
 }
@@ -1792,11 +1796,15 @@ function stage1CallCandidate(context, destination) {
         /* Hand the decrypted buffer to Stage 2, which keys on the 2-byte
          * read of dec_lic + 0x33 (stage2.cpp's stage2::init). */
         if (stage1.decLic !== null && stage1.decLic !== undefined) {
+            stage1Log("stage2-handoff", "decLic=" + stage1.decLic);
             try {
                 startStage2(stage1.decLic);
+                stage1Log("stage2-armed", "sub=" + plan.stage2.sub);
             } catch (e) {
                 stage1Log("stage2-start-failed", String(e));
             }
+        } else {
+            stage1Log("stage2-skipped", "decLic=" + stage1.decLic);
         }
     }
 }

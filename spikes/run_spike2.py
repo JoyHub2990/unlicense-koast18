@@ -164,6 +164,13 @@ def run_agent(exe: Path, workdir: Path, head_hex: str, nt_path: str,
                 if spike == "stage1":
                     print("    spike2: stage1 " + str(payload.get("event")) +
                           " " + str(payload.get("detail")), flush=True)
+                elif spike == "stage2":
+                    # Stage 2's events were appended to messages (and so reached
+                    # the report JSON) but never printed, so a real run that
+                    # completed Stage 1 showed nothing about Stage 2 at all --
+                    # indistinguishable from Stage 2 never having started.
+                    print("    spike2: stage2 " + str(payload.get("event")) +
+                          " " + str(payload.get("detail")), flush=True)
                 elif spike in ("lic_copy", "lic_copy_missing", "lic_mapped",
                                "byte-store-unresolved", "exit"):
                     print("    spike2: " + spike + " " +
@@ -210,6 +217,7 @@ def run_agent(exe: Path, workdir: Path, head_hex: str, nt_path: str,
 
     status = None
     stage0_reported = False
+    stage1_reported = False
     landmark_at = None
     deadline = time.time() + duration
     last_report = 0.0
@@ -239,8 +247,15 @@ def run_agent(exe: Path, workdir: Path, head_hex: str, nt_path: str,
             print("  stage2 complete", flush=True)
             break
         if status.get("stage1Complete") or (status.get("stage1Sub") or 0) >= 6:
-            print("  stage1 complete", flush=True)
-            break
+            if not stage1_reported:
+                stage1_reported = True
+                print("  stage1 complete", flush=True)
+            # Do NOT break. Stage 2 runs on the decrypted buffer Stage 1
+            # produced, and it needs the rest of the window: breaking here tore
+            # the run down the moment Stage 1 finished, which is why every real
+            # completion showed stage2Sub=0 (round 18: ngahost#3/#13 completed
+            # Stage 1 and Stage 2 never started). Keep polling until Stage 2
+            # completes or the duration runs out.
         # The landmark, when it is taken at all, is taken within ~45s and the
         # target then exits on the rejected license. Waiting out the rest of
         # the window only adds dead time to every run that did hit, so close
@@ -252,8 +267,17 @@ def run_agent(exe: Path, workdir: Path, head_hex: str, nt_path: str,
                 print("  landmark taken (stage1Sub>=2); collecting "
                       "sub-stage data", flush=True)
             elif time.time() - landmark_at >= 25:
-                print("  landmark window closed", flush=True)
-                break
+                # Close early only while Stage 1 is the thing being measured.
+                # Once Stage 1 has completed, Stage 2 is running on the
+                # decrypted buffer and needs the rest of the window -- this
+                # break was the second place the run was torn down before
+                # Stage 2 could do anything.
+                if status.get("stage1Complete") or \
+                        (status.get("stage2Sub") or 0) > 0:
+                    pass
+                else:
+                    print("  landmark window closed", flush=True)
+                    break
         if time.time() - last_report >= 15:
             last_report = time.time()
             print(f"  ... {status}", flush=True)
