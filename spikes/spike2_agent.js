@@ -1341,14 +1341,16 @@ function stage1MpExptmodEnter(context) {
     if (keys === null) {
         return;
     }
-    if (stage1.callCount <= stage1.decSections) {
+    if (stage1.callCount < stage1CallThreshold(stage1)) {
         slotWrite(context, slots[0], keys.key2.exp.struct);
         slotWrite(context, slots[1], keys.key2.mod.struct);
         stage1Log("swap", "call#" + stage1.callCount + " <- rsa_key_2");
     } else {
-        slotWrite(context, slots[0], keys.key1.exp.struct);
-        slotWrite(context, slots[1], keys.key1.mod.struct);
-        stage1Log("swap", "call#" + stage1.callCount + " <- rsa_key_1");
+        const finalKey = stage1FinalKey(keys);
+        slotWrite(context, slots[0], finalKey.exp.struct);
+        slotWrite(context, slots[1], finalKey.mod.struct);
+        stage1Log("swap", "call#" + stage1.callCount + " <- " +
+            (plan.stage1CompleteAfter > 0 ? "rsa_key_2" : "rsa_key_1"));
         disarmGuard();
         stage1.sub = 6;
         report.stage1DecLic = stage1.decLic;
@@ -1616,7 +1618,7 @@ function stage1CallWatch(context, site) {
     }
 
     stage1.callCount++;
-    if (stage1.callCount <= stage1.decSections) {
+    if (stage1.callCount < stage1CallThreshold(stage1)) {
         if (keys !== null) {
             slotWrite(context, slots[0], keys.key2.exp.struct);
             slotWrite(context, slots[1], keys.key2.mod.struct);
@@ -1625,10 +1627,12 @@ function stage1CallWatch(context, site) {
         return;
     }
     if (keys !== null) {
-        slotWrite(context, slots[0], keys.key1.exp.struct);
-        slotWrite(context, slots[1], keys.key1.mod.struct);
+        const finalKey = stage1FinalKey(keys);
+        slotWrite(context, slots[0], finalKey.exp.struct);
+        slotWrite(context, slots[1], finalKey.mod.struct);
     }
-    stage1Log("swap", "call#" + stage1.callCount + " <- rsa_key_1");
+    stage1Log("swap", "call#" + stage1.callCount + " <- " +
+        (plan.stage1CompleteAfter > 0 ? "rsa_key_2" : "rsa_key_1"));
     stage1.sub = 6;
     report.stage1DecLic = stage1.decLic;
     report.stage1Complete = true;
@@ -1753,14 +1757,16 @@ function stage1CallCandidate(context, destination) {
     if (keys === null) {
         return;
     }
-    if (stage1.callCount <= stage1.decSections) {
+    if (stage1.callCount < stage1CallThreshold(stage1)) {
         slotWrite(context, slots[0], keys.key2.exp.struct);
         slotWrite(context, slots[1], keys.key2.mod.struct);
         stage1Log("swap", "call#" + stage1.callCount + " <- rsa_key_2");
     } else {
-        slotWrite(context, slots[0], keys.key1.exp.struct);
-        slotWrite(context, slots[1], keys.key1.mod.struct);
-        stage1Log("swap", "call#" + stage1.callCount + " <- rsa_key_1");
+        const finalKey = stage1FinalKey(keys);
+        slotWrite(context, slots[0], finalKey.exp.struct);
+        slotWrite(context, slots[1], finalKey.mod.struct);
+        stage1Log("swap", "call#" + stage1.callCount + " <- " +
+            (plan.stage1CompleteAfter > 0 ? "rsa_key_2" : "rsa_key_1"));
         disarmGuard();
         stage1.sub = 6;
         report.stage1DecLic = stage1.decLic;
@@ -1779,6 +1785,30 @@ function stage1CallCandidate(context, destination) {
  * hardcodes [esp+8]; on x64 the frame layout differs, so several slots are
  * collected and the first one that holds a non-system address is used (and
  * reported, so the offsets can be pinned down). */
+/* How many RSA calls to let through before Stage 1 is done, and which key to
+ * install on that last call.
+ *
+ * The mimic (and whatlicense's model) expects dec_sections + 1 calls, the last
+ * one restoring the real key. A real sample calls the routine *once*: it
+ * decrypts the first section with the swapped key, gets a blob it does not
+ * like, and gives up -- so "callCount > decSections" never fires and Stage 1
+ * never completes (ngahost#9: sub4-found-mp_exptmod, swap call#1, and no
+ * call#2). STAGE1_COMPLETE_AFTER=1 ends Stage 1 on that first call, with our
+ * key still in place, so Stage 2 gets to run. */
+function stage1CallThreshold(stage1) {
+    return plan.stage1CompleteAfter > 0
+        ? plan.stage1CompleteAfter
+        : (stage1.decSections + 1);
+}
+
+/* On the final call the original flow restores the real key so the
+ * protection's own decryption of the last section stands. In single-call mode
+ * there is no earlier section, so our key stays and the decrypted content is
+ * deterministic. */
+function stage1FinalKey(keys) {
+    return plan.stage1CompleteAfter > 0 ? keys.key2 : keys.key1;
+}
+
 /* Is this value a pointer into the current stack frame's neighbourhood?
  * mp_exptmod's operands are heap mp_ints, never stack addresses, so this
  * separates a real argument from a stale slot the license read left behind. */
@@ -2429,6 +2459,11 @@ rpc.exports = {
          * the license read is the RSA call, so no return address has to be
          * guessed. On by default; `callWatch: false` turns it off. */
         plan.callWatch = options.callWatch !== false;
+        /* 0 = whatlicense's model (dec_sections + 1 calls, last one restoring
+         * the real key); N > 0 = end Stage 1 on the Nth call. A real sample
+         * calls the RSA routine once and then gives up, so the model's count is
+         * never reached. */
+        plan.stage1CompleteAfter = options.stage1CompleteAfter || 0;
         plan.mainModuleName = main.name;
         Process.setExceptionHandler(function (details) {
             try {

@@ -194,7 +194,10 @@ def run_agent(exe: Path, workdir: Path, head_hex: str, nt_path: str,
         "licenseFile": license_file,
         "licSize": license_size,
         "rsaKeys": rsa_keys,
-        "deferTracing": defer_tracing
+        "deferTracing": defer_tracing,
+        # A real sample calls the RSA routine once (see stage1CallThreshold in
+        # the agent); the mimic needs whatlicense's dec_sections + 1.
+        "stage1CompleteAfter": int(os.environ.get("STAGE1_COMPLETE_AFTER", "0"))
     })
     device.resume(pid)
     # Stalker only takes effect on a running thread. With --defer-tracing the

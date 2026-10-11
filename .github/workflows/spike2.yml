@@ -204,6 +204,12 @@ jobs:
       - name: Spike 2 against real samples (deferred tracing)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.samples && contains((matrix.python_arch == 'x86' && inputs.modes_x86) || (matrix.python_arch == 'x64' && inputs.modes_x64) || 'deferred', 'deferred') }}
         continue-on-error: true
+        env:
+          # A real sample calls the RSA routine once and then gives up, so
+          # whatlicense's dec_sections + 1 completion count is never reached
+          # (ngahost#9: swap call#1 and no call#2). End Stage 1 on that first
+          # call, with the swapped key in place, so Stage 2 gets to run.
+          STAGE1_COMPLETE_AFTER: "1"
         run: python spikes/run_spike2.py --ci --defer-tracing --repeat ${{ inputs.repeat || 1 }} --dummy results/spike2_dummy/regkey.dat --targets ${{ (matrix.python_arch == 'x86' && inputs.targets_x86) || (matrix.python_arch == 'x64' && inputs.targets_x64) || matrix.targets }} --duration ${{ inputs.duration || 90 }}
 
       - name: Upload spike 2 results
