@@ -336,6 +336,11 @@ function stage2State() {
         plan.stage2 = {
             active: true, sub: 0, decLic: null, hash3: 0,
             guardStart: null, guardLength: 0, hits: 0, rearms: 0,
+            /* Second guard range and the mp_int's digit buffer. mp_exptmod's
+             * Y is an mp_int struct; whatlicense's dec_lic may be that struct
+             * or the buffer inside it, so both +HASH3_OFFSET candidates stay
+             * alive and whichever is read at decides the landmark. */
+            guardStart2: null, guardLength2: 0, decLicBuf: null,
             rearmPending: false, cmpAddress: null, realHash3: null,
             cmpCandidates: 0, neutralised: 0, followed: [],
             insideAtFollow: 0
@@ -350,21 +355,57 @@ function stage2Log(event, detail) {
 
 function stage2ArmGuard() {
     const s2 = stage2State();
-    if (s2.guardStart === null || s2.guardLength <= 0) {
-        return false;
-    }
     const old = Memory.alloc(4);
-    return getVirtualProtect()(s2.guardStart, s2.guardLength,
-        PAGE_READWRITE | PAGE_GUARD, old) !== 0;
+    let ok = false;
+    if (s2.guardStart !== null && s2.guardLength > 0) {
+        ok = getVirtualProtect()(s2.guardStart, s2.guardLength,
+            PAGE_READWRITE | PAGE_GUARD, old) !== 0 || ok;
+    }
+    if (s2.guardStart2 !== null && s2.guardLength2 > 0) {
+        ok = getVirtualProtect()(s2.guardStart2, s2.guardLength2,
+            PAGE_READWRITE | PAGE_GUARD, old) !== 0 || ok;
+    }
+    return ok;
 }
 
 function stage2DisarmGuard() {
     const s2 = stage2State();
-    if (s2.guardStart === null || s2.guardLength <= 0) {
-        return;
-    }
     const old = Memory.alloc(4);
-    getVirtualProtect()(s2.guardStart, s2.guardLength, PAGE_READWRITE, old);
+    if (s2.guardStart !== null && s2.guardLength > 0) {
+        getVirtualProtect()(s2.guardStart, s2.guardLength, PAGE_READWRITE, old);
+    }
+    if (s2.guardStart2 !== null && s2.guardLength2 > 0) {
+        getVirtualProtect()(s2.guardStart2, s2.guardLength2, PAGE_READWRITE, old);
+    }
+}
+
+/* Is this address inside either guarded page? */
+function stage2InGuardRange(s2, address) {
+    const ranges = [[s2.guardStart, s2.guardLength],
+                    [s2.guardStart2, s2.guardLength2]];
+    for (const range of ranges) {
+        if (range[0] === null || range[0] === undefined || range[1] <= 0) {
+            continue;
+        }
+        if (address.compare(range[0]) >= 0 &&
+            address.compare(range[0].add(range[1])) < 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* hash_3 sits HASH3_OFFSET bytes into the decrypted license. Two candidates are
+ * kept alive: the mp_int mp_exptmod was handed (its 4th argument, which is what
+ * the port has) and the digit buffer that struct points at -- which of the two
+ * whatlicense's x86 dec_lic refers to is not settled, and reading the wrong one
+ * gives a hash_3 of stack/heap garbage that can never match. */
+function stage2IsHash3Address(s2, address) {
+    if (address.compare(s2.decLic.add(HASH3_OFFSET)) === 0) {
+        return true;
+    }
+    return s2.decLicBuf !== null &&
+        address.compare(s2.decLicBuf.add(HASH3_OFFSET)) === 0;
 }
 
 /* Same rule as Stage 1: re-arm only from the JS thread, never inside the
@@ -390,15 +431,38 @@ function startStage2(decLic) {
     s2.active = true;
     s2.sub = 1;
     s2.decLic = ptr(decLic);
+    /* The 4th argument of mp_exptmod is an mp_int (libtommath: used, alloc,
+     * sign, then the digit pointer). Resolve that pointer as a second hash_3
+     * candidate -- see stage2IsHash3Address. */
+    s2.decLicBuf = null;
+    try {
+        const candidate = s2.decLic.add(IS_IA32 ? 0x0c : 0x10).readPointer();
+        const range = candidate.isNull()
+            ? null : Process.findRangeByAddress(candidate);
+        if (range !== null) {
+            s2.decLicBuf = candidate;
+        }
+    } catch (e) {
+        s2.decLicBuf = null;
+    }
     try {
         s2.hash3 = s2.decLic.add(HASH3_OFFSET).readU16();
     } catch (e) {
         s2.hash3 = 0;
     }
-    const target = s2.decLic.add(HASH3_OFFSET);
     const pageSize = Process.pageSize;
-    s2.guardStart = target.and(ptr(pageSize - 1).not());
+    s2.guardStart = s2.decLic.add(HASH3_OFFSET).and(ptr(pageSize - 1).not());
     s2.guardLength = pageSize;
+    s2.guardStart2 = null;
+    s2.guardLength2 = 0;
+    if (s2.decLicBuf !== null) {
+        const second = s2.decLicBuf.add(HASH3_OFFSET).and(
+            ptr(pageSize - 1).not());
+        if (second.compare(s2.guardStart) !== 0) {
+            s2.guardStart2 = second;
+            s2.guardLength2 = pageSize;
+        }
+    }
     /* Arm *outside* the log call. stage2ArmGuard() used to be evaluated as an
      * argument, so if it threw there was no log line at all and the failure was
      * invisible (ngahost#1 completed Stage 1 and then produced no stage2 output
@@ -410,9 +474,19 @@ function startStage2(decLic) {
     } catch (e) {
         error = String(e);
     }
+    let bufHash3 = null;
+    if (s2.decLicBuf !== null) {
+        try {
+            bufHash3 = "0x" + s2.decLicBuf.add(HASH3_OFFSET).readU16().toString(16);
+        } catch (e) {
+            bufHash3 = "unreadable";
+        }
+    }
     stage2Log("start", "dec_lic=" + s2.decLic + " hash3=0x" +
         s2.hash3.toString(16) + " guard=" + s2.guardStart + "+0x" +
         s2.guardLength.toString(16) + " armed=" + armed +
+        " buf=" + s2.decLicBuf + " bufHash3=" + bufHash3 +
+        " guard2=" + s2.guardStart2 +
         (error === null ? "" : " arm-error=" + error));
 }
 
@@ -435,8 +509,7 @@ function stage2OnGuardAccess(details) {
     if (address === null || address === undefined) {
         return false;
     }
-    if (address.compare(s2.guardStart) < 0 ||
-        address.compare(s2.guardStart.add(s2.guardLength)) >= 0) {
+    if (!stage2InGuardRange(s2, address)) {
         return false;
     }
     s2.hits++;
@@ -444,14 +517,15 @@ function stage2OnGuardAccess(details) {
         const hctx = details.context || null;
         stage2Log("guard-hit", "#" + s2.hits + " op=" + operation +
             " addr=" + address + " pc=" + (hctx === null ? "?" :
-                hctx[PC_REG]) + " hash3At=" + s2.decLic.add(HASH3_OFFSET));
+                hctx[PC_REG]) + " hash3At=" + s2.decLic.add(HASH3_OFFSET) +
+            " bufHash3At=" + (s2.decLicBuf === null ? "none" :
+                s2.decLicBuf.add(HASH3_OFFSET)));
     }
     if (s2.sub !== 1) {
         stage2DisarmGuard();
         return true;
     }
-    if (operation !== "read" ||
-        address.compare(s2.decLic.add(HASH3_OFFSET)) !== 0) {
+    if (operation !== "read" || !stage2IsHash3Address(s2, address)) {
         stage2ScheduleRearm();
         return true;
     }
@@ -464,7 +538,7 @@ function stage2OnGuardAccess(details) {
      * mem[eax]=0x3730 dx=0xbeef ours=0x0, i.e. both real operands were read
      * correctly and the reference value was the only thing wrong. */
     try {
-        s2.hash3 = s2.decLic.add(HASH3_OFFSET).readU16();
+        s2.hash3 = address.readU16();
     } catch (e) {
         /* keep whatever start time captured */
     }
