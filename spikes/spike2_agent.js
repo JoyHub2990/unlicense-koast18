@@ -627,6 +627,86 @@ function stage2ScheduleRearm() {
     }, 2);
 }
 
+/* Find the decrypted buffer by its contents instead of by argument.
+ *
+ * Rounds 31/33 armed the allocation holding dec_lic (the 4th argument) and the
+ * one holding the pre-call dp; the protection touched neither, so neither is the
+ * object it reads afterwards, and the real buffer's location is unknown. With
+ * the identity key in play the RSA output is the input value itself, i.e. the
+ * licence file bytes, so the buffer can simply be found by searching memory for
+ * those bytes. Anything that matches and is not lic_copy itself is a candidate.
+ */
+function stage2LocateBufferByContent() {
+    const s2 = stage2State();
+    const copy = plan.licCopy === undefined || plan.licCopy === null
+        ? null : ptr(plan.licCopy);
+    if (copy === null) {
+        stage2Log("buf-scan", "no lic_copy to search for");
+        return;
+    }
+    let pattern = null;
+    try {
+        pattern = copy.readByteArray(8);
+    } catch (e) {
+        stage2Log("buf-scan", "lic_copy unreadable: " + e);
+        return;
+    }
+    const hits = [];
+    let scanned = 0;
+    let ranges = [];
+    try {
+        ranges = Process.enumerateRanges("r--");
+    } catch (e) {
+        stage2Log("buf-scan", "enumerateRanges failed: " + e);
+        return;
+    }
+    for (let i = 0; i < ranges.length && hits.length < 6; i++) {
+        const range = ranges[i];
+        if (range.size > 0x4000000) {
+            continue;
+        }
+        try {
+            const found = Memory.scanSync(range.base, range.size, pattern);
+            scanned += range.size;
+            for (let j = 0; j < found.length && hits.length < 6; j++) {
+                const at = found[j].address;
+                /* lic_copy itself is not the decrypted buffer. */
+                if (at.compare(copy) >= 0 && at.compare(copy.add(0x2000)) < 0) {
+                    continue;
+                }
+                hits.push(at);
+            }
+        } catch (e) {
+            /* unreadable range */
+        }
+    }
+    stage2Log("buf-scan", "hits=" + hits.length + " scanned=0x" +
+        scanned.toString(16) + " at=" +
+        hits.map(function (a) { return a.toString(); }).join(","));
+    if (hits.length === 0) {
+        return;
+    }
+    const range = stage2GuardRange(hits[0].add(HASH3_OFFSET));
+    s2.decLicBuf = hits[0];
+    if (range.start.compare(s2.guardStart) === 0 ||
+        (s2.guardStart2 !== null && range.start.compare(s2.guardStart2) === 0)) {
+        stage2Log("buf-scan", "already guarded " + range.start);
+        return;
+    }
+    s2.guardStart2 = range.start;
+    s2.guardLength2 = range.length;
+    setTimeout(function () {
+        let armed = false;
+        try {
+            armed = stage2ArmGuard();
+        } catch (e) {
+            armed = false;
+        }
+        stage2Log("buf-scan-armed", "page=" + range.start + " len=0x" +
+            range.length.toString(16) + " armed=" + armed);
+    }, 0);
+}
+
 function startStage2(decLic) {
     const s2 = stage2State();
     s2.active = true;
@@ -672,17 +752,6 @@ function startStage2(decLic) {
             s2.guardLength2 = second.length;
         }
     }
-    /* Arm *outside* the log call. stage2ArmGuard() used to be evaluated as an
-     * argument, so if it threw there was no log line at all and the failure was
-     * invisible (ngahost#1 completed Stage 1 and then produced no stage2 output
-     * whatsoever). */
-    let armed = false;
-    let error = null;
-    try {
-        armed = stage2ArmGuard();
-    } catch (e) {
-        error = String(e);
-    }
     let bufHash3 = null;
     if (s2.decLicBuf !== null) {
         try {
@@ -691,12 +760,28 @@ function startStage2(decLic) {
             bufHash3 = "unreadable";
         }
     }
+    /* Log first, arm after.
+     *
+     * The arm used to run inside the mp_exptmod hook, and a wide guard_span
+     * makes that hundreds of VirtualProtect calls inside a hook -- round 34's
+     * 1MB span never returned and the real sample produced no stage2 start line
+     * at all. Logging first means the range is visible even if arming is slow,
+     * and deferring the arm keeps the target's hook short. */
     stage2Log("start", "dec_lic=" + s2.decLic + " hash3=0x" +
         s2.hash3.toString(16) + " guard=" + s2.guardStart + "+0x" +
-        s2.guardLength.toString(16) + " armed=" + armed +
-        " buf=" + s2.decLicBuf + " bufHash3=" + bufHash3 +
-        " guard2=" + s2.guardStart2 +
-        (error === null ? "" : " arm-error=" + error));
+        s2.guardLength.toString(16) + " buf=" + s2.decLicBuf +
+        " bufHash3=" + bufHash3 + " guard2=" + s2.guardStart2);
+    setTimeout(function () {
+        let armed = false;
+        let error = null;
+        try {
+            armed = stage2ArmGuard();
+        } catch (e) {
+            error = String(e);
+        }
+        stage2Log("armed", "armed=" + armed +
+            (error === null ? "" : " arm-error=" + error));
+    }, 0);
 }
 
 function stage2OnGuardAccess(details) {
@@ -1799,6 +1884,11 @@ function stage1MpExptmodEnter(context) {
                  * the call's onEnter); re-resolve its digit buffer once the RSA
                  * write has happened. See stage2RefreshBuffer. */
                 setTimeout(stage2RefreshBuffer, 20);
+                /* Locate the decrypted buffer by its contents: the
+                 * argument-derived addresses have been ruled out (rounds
+                 * 31/33). Runs on the JS thread -- scanning memory inside the
+                 * hook would stall it. */
+                setTimeout(stage2LocateBufferByContent, 60);
             } catch (e) {
                 stage1Log("stage2-start-failed", String(e));
             }
@@ -2273,6 +2363,11 @@ function stage1CallCandidate(context, destination) {
                  * the call's onEnter); re-resolve its digit buffer once the RSA
                  * write has happened. See stage2RefreshBuffer. */
                 setTimeout(stage2RefreshBuffer, 20);
+                /* Locate the decrypted buffer by its contents: the
+                 * argument-derived addresses have been ruled out (rounds
+                 * 31/33). Runs on the JS thread -- scanning memory inside the
+                 * hook would stall it. */
+                setTimeout(stage2LocateBufferByContent, 60);
             } catch (e) {
                 stage1Log("stage2-start-failed", String(e));
             }
