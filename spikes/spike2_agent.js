@@ -375,29 +375,61 @@ function stage2Log(event, detail) {
     emit({ spike: "stage2", event: event, detail: detail });
 }
 
+/* Arm one range page by page, tolerating pages that refuse.
+ *
+ * A single VirtualProtect over a 64KB span fails as a whole if any page in it is
+ * not committed (round 32: guard=...0x10000 armed=false, so nothing was guarded
+ * at all). Arming each page separately keeps the pages that do work and reports
+ * how many. */
+function stage2ArmOne(start, length) {
+    const pageSize = Process.pageSize;
+    const old = Memory.alloc(4);
+    let armed = 0;
+    for (let offset = 0; offset < length; offset += pageSize) {
+        try {
+            if (getVirtualProtect()(start.add(offset), pageSize,
+                    PAGE_READWRITE | PAGE_GUARD, old) !== 0) {
+                armed++;
+            }
+        } catch (e) {
+            /* this page cannot be guarded; keep the rest */
+        }
+    }
+    return armed;
+}
+
+function stage2DisarmOne(start, length) {
+    const pageSize = Process.pageSize;
+    const old = Memory.alloc(4);
+    for (let offset = 0; offset < length; offset += pageSize) {
+        try {
+            getVirtualProtect()(start.add(offset), pageSize, PAGE_READWRITE,
+                old);
+        } catch (e) {
+            /* already gone */
+        }
+    }
+}
+
 function stage2ArmGuard() {
     const s2 = stage2State();
-    const old = Memory.alloc(4);
-    let ok = false;
+    let armed = 0;
     if (s2.guardStart !== null && s2.guardLength > 0) {
-        ok = getVirtualProtect()(s2.guardStart, s2.guardLength,
-            PAGE_READWRITE | PAGE_GUARD, old) !== 0 || ok;
+        armed += stage2ArmOne(s2.guardStart, s2.guardLength);
     }
     if (s2.guardStart2 !== null && s2.guardLength2 > 0) {
-        ok = getVirtualProtect()(s2.guardStart2, s2.guardLength2,
-            PAGE_READWRITE | PAGE_GUARD, old) !== 0 || ok;
+        armed += stage2ArmOne(s2.guardStart2, s2.guardLength2);
     }
-    return ok;
+    return armed > 0;
 }
 
 function stage2DisarmGuard() {
     const s2 = stage2State();
-    const old = Memory.alloc(4);
     if (s2.guardStart !== null && s2.guardLength > 0) {
-        getVirtualProtect()(s2.guardStart, s2.guardLength, PAGE_READWRITE, old);
+        stage2DisarmOne(s2.guardStart, s2.guardLength);
     }
     if (s2.guardStart2 !== null && s2.guardLength2 > 0) {
-        getVirtualProtect()(s2.guardStart2, s2.guardLength2, PAGE_READWRITE, old);
+        stage2DisarmOne(s2.guardStart2, s2.guardLength2);
     }
 }
 
@@ -422,6 +454,22 @@ function stage2InGuardRange(s2, address) {
  * the port has) and the digit buffer that struct points at -- which of the two
  * whatlicense's x86 dec_lic refers to is not settled, and reading the wrong one
  * gives a hash_3 of stack/heap garbage that can never match. */
+/* The page-aligned start and length of the allocation containing `pointer`,
+ * capped so a large mapping does not become thousands of VirtualProtect calls.
+ * Falls back to the single containing page when the range is unknown. */
+function stage2GuardRange(pointer) {
+    const pageSize = Process.pageSize;
+    const page = pointer.and(ptr(pageSize - 1).not());
+    const cap = 0x10000;
+    let length = pageSize;
+    const range = Process.findRangeByAddress(pointer);
+    if (range !== null) {
+        const span = range.base.add(range.size).sub(page);
+        length = span.compare(cap) > 0 ? cap : span.toInt32();
+    }
+    return { start: page, length: length };
+}
+
 function stage2IsHash3Address(s2, address) {
     if (address.compare(s2.decLic.add(HASH3_OFFSET)) === 0) {
         return true;
@@ -476,8 +524,8 @@ function stage2RefreshBuffer() {
         }
         return;
     }
-    const pageSize = Process.pageSize;
-    const page = candidate.add(HASH3_OFFSET).and(ptr(pageSize - 1).not());
+    const range = stage2GuardRange(candidate.add(HASH3_OFFSET));
+    const page = range.start;
     s2.decLicBuf = candidate;
     let hash3 = "unreadable";
     try {
@@ -514,7 +562,7 @@ function stage2RefreshBuffer() {
         return;
     }
     s2.guardStart2 = page;
-    s2.guardLength2 = pageSize;
+    s2.guardLength2 = range.length;
     let armed = false;
     let error = null;
     try {
@@ -598,28 +646,24 @@ function startStage2(decLic) {
         s2.hash3 = 0;
     }
     const pageSize = Process.pageSize;
-    /* Guard a span, not a single page.
+    /* Guard the allocations the two candidates live in, page by page.
      *
-     * Round 31 armed the struct page (dec_lic + 0x33) and the pre-call dp page,
-     * and the protection touched neither -- not even a write, although the RSA
-     * call must write its output somewhere. So dec_lic (the 4th argument) is not
-     * the output buffer we assumed, and the real one is allocated inside
-     * mp_exptmod; round 24's occasional hit was that allocation happening to
-     * land on the pre-call dp page.
-     *
-     * Covering 64KB around each candidate turns "the protection reads somewhere
-     * else in this heap" into a guard-hit with an address, instead of silence. */
-    const span = 0x10000;
-    s2.guardStart = s2.decLic.add(HASH3_OFFSET).and(ptr(pageSize - 1).not());
-    s2.guardLength = span;
+     * Round 31 armed one page at dec_lic + 0x33 and one at the pre-call dp, and
+     * the protection touched neither -- not even a write, although the RSA call
+     * must write its output somewhere. So dec_lic (the 4th argument) is not the
+     * output buffer we assumed, and the real one is allocated inside mp_exptmod.
+     * Covering the whole containing allocation turns "the protection reads
+     * elsewhere in this heap" into a guard-hit with an address. */
+    const primary = stage2GuardRange(s2.decLic.add(HASH3_OFFSET));
+    s2.guardStart = primary.start;
+    s2.guardLength = primary.length;
     s2.guardStart2 = null;
     s2.guardLength2 = 0;
     if (s2.decLicBuf !== null) {
-        const second = s2.decLicBuf.add(HASH3_OFFSET).and(
-            ptr(pageSize - 1).not());
-        if (second.compare(s2.guardStart) !== 0) {
-            s2.guardStart2 = second;
-            s2.guardLength2 = span;
+        const second = stage2GuardRange(s2.decLicBuf.add(HASH3_OFFSET));
+        if (second.start.compare(s2.guardStart) !== 0) {
+            s2.guardStart2 = second.start;
+            s2.guardLength2 = second.length;
         }
     }
     /* Arm *outside* the log call. stage2ArmGuard() used to be evaluated as an
@@ -708,17 +752,17 @@ function stage2OnGuardAccess(details) {
         if (buf !== null && !buf.isNull() &&
             Process.findRangeByAddress(buf) !== null) {
             s2.decLicBuf = buf;
-            const dpPageSize = Process.pageSize;
-            const dpPage = buf.add(HASH3_OFFSET).and(
-                ptr(dpPageSize - 1).not());
+            const dpRange = stage2GuardRange(buf.add(HASH3_OFFSET));
+            const dpPage = dpRange.start;
             const already = dpPage.compare(s2.guardStart) === 0 ||
                 (s2.guardStart2 !== null &&
                  dpPage.compare(s2.guardStart2) === 0);
             stage2Log("dp-read", "buf=" + buf + " page=" + dpPage +
+                " len=0x" + dpRange.length.toString(16) +
                 " alreadyGuarded=" + already);
             if (!already) {
                 s2.guardStart2 = dpPage;
-                s2.guardLength2 = dpPageSize;
+                s2.guardLength2 = dpRange.length;
                 /* Arming from the exception handler would fault on the retrying
                  * instruction; defer to the JS thread. */
                 setTimeout(stage2ArmGuard, 0);
