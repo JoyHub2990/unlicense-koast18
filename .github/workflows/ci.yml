@@ -1,10 +1,13 @@
 name: ci
 
 on:
-  push:
-    branches: [main, dev]
-  pull_request:
+  # Dispatch only. This downloads all 19 samples and runs a frida smoke test on
+  # every push, which the spike2 legs already cover; it was pure queue pressure.
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Static pipeline: fetch public sample targets, identify packer version/arch.

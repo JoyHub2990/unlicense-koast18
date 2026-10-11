@@ -48,6 +48,10 @@ on:
       - "spikes/**"
       - ".github/workflows/spike2.yml"
 
+concurrency:
+  group: spike2-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   SAMPLES_LISTS: ${{ inputs.samples_lists || 'tests/samples.list' }}
 

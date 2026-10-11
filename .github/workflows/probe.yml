@@ -3,6 +3,10 @@ name: probe
 on:
   workflow_dispatch:
 
+concurrency:
+  group: probe-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   probe:
     strategy:

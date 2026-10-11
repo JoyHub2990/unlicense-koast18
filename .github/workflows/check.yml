@@ -1,6 +1,20 @@
 name: Python Check
 
-on: [push]
+on:
+  workflow_dispatch:
+  # Only when the package itself changes. This used to run on every push, as a
+  # 3-version windows matrix, while nothing in unlicense/ was being touched --
+  # three runners per push competing with the spikes.
+  push:
+    paths:
+      - "unlicense/**"
+      - "pyproject.toml"
+      - "poetry.lock"
+      - ".github/workflows/check.yml"
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -8,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python_version: ["3.9", "3.10", "3.11"]
+        python_version: ["3.11"]
     runs-on: windows-latest
 
     defaults:

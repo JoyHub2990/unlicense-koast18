@@ -12,9 +12,13 @@ on:
     paths:
       - "unlicense/**"
       - "scripts/**"
-      - "tests/**"
       - "pyproject.toml"
-      - ".github/workflows/unpack.yml"
+      # NOT tests/**: editing a sample manifest must not launch the 19-sample
+      # unpack run (up to 90 minutes of windows runner). Dispatch it instead.
+
+concurrency:
+  group: unpack-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   SAMPLES_LISTS: ${{ inputs.samples_lists || 'tests/samples.list' }}
