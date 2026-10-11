@@ -479,6 +479,32 @@ function stage2RefreshBuffer() {
     }
 }
 
+/* Offset of `address` inside the decrypted buffer, or -1 if it is outside.
+ *
+ * The landmark used to require an exact match on whatlicense's fixed +0x33.
+ * Round 23 showed that is wrong for this sample: the guard was armed on the
+ * buffer page and did catch the protection's accesses, but it read the *start*
+ * of the buffer (buf=0x505010, reads at 0x505010 and 0x5050a0) while the
+ * landmark test demanded 0x505043. 0x33 is a constant whatlicense measured on
+ * its own samples, not a property of the format.
+ *
+ * Accept any access inside the buffer and report where it landed, so the real
+ * offset comes from data. */
+function stage2Hash3Offset(s2, address) {
+    if (s2.decLicBuf === null) {
+        return -1;
+    }
+    const delta = address.sub(s2.decLicBuf);
+    if (delta.compare(0) < 0) {
+        return -1;
+    }
+    const span = Math.max(plan.licSize || 0x200, 0x200);
+    if (delta.compare(span) >= 0) {
+        return -1;
+    }
+    return delta.toInt32();
+}
+
 /* Same rule as Stage 1: re-arm only from the JS thread, never inside the
  * exception handler, or the retrying instruction faults on itself forever. */
 function stage2ScheduleRearm() {
@@ -596,13 +622,32 @@ function stage2OnGuardAccess(details) {
         stage2DisarmGuard();
         return true;
     }
-    if (operation !== "read" || !stage2IsHash3Address(s2, address)) {
+    const offset = stage2Hash3Offset(s2, address);
+    const exact = stage2IsHash3Address(s2, address);
+    if (operation !== "read" || offset < 0) {
+        /* Not inside the decrypted buffer. Log one miss with the buffer's
+         * extent: that is what says whether the guarded object is even the
+         * right one. */
+        if (s2.missLogged !== true) {
+            s2.missLogged = true;
+            stage2Log("hash3-miss", "op=" + operation + " addr=" + address +
+                " buf=" + s2.decLicBuf + " bufEnd=" +
+                (s2.decLicBuf === null ? "none" :
+                    s2.decLicBuf.add(Math.max(plan.licSize || 0x200, 0x200))));
+        }
         stage2ScheduleRearm();
         return true;
     }
+    let value = "unreadable";
+    try {
+        value = "0x" + address.readU16().toString(16);
+    } catch (e) {
+        /* leave the marker */
+    }
     const ctx = details.context || null;
     stage2Log("hash3-read", "pc=" + (ctx === null ? "?" : ctx[PC_REG]) +
-        " hits=" + s2.hits);
+        " offset=0x" + offset.toString(16) + " value=" + value +
+        " exact=" + exact + " hits=" + s2.hits);
     /* Re-read hash_3 now, at the landmark. startStage2 read dec_lic + 0x33
      * before anything had written it, so it captured 0 and the comparison
      * could never match "ours" -- the candidate log showed
