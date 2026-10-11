@@ -849,10 +849,20 @@ function install(iterator) {
                         stage1.path === "ret") {
                         return;
                     }
+                    /* The callout is emitted for every direct call in every
+                     * non-system module, on every followed thread. Without this
+                     * the first few calls after the read are usually another
+                     * thread's unrelated work, and the five identification
+                     * attempts are spent on them (round 13: ngahost#7 tried
+                     * 0x7fff0ac64850, 0x7fff0ac65490, ... none of them RSA). */
+                    if (stage1.landmarkTid !== null &&
+                        Process.getCurrentThreadId() !== stage1.landmarkTid) {
+                        return;
+                    }
                     if (!stage1.mpExptmod) {
                         /* Still looking for the RSA call: the fingerprint only
                          * runs for the first few candidates after the read. */
-                        if (stage1.callWatchTries >= 5) {
+                        if (stage1.callWatchTries >= 12) {
                             return;
                         }
                     } else if (site.dest.toString() !== stage1.mpExptmod) {
@@ -2114,8 +2124,15 @@ function stage1TakeLandmark(snapshot, label) {
     /* Arm the PIN-style call watcher: from here on, the first direct call the
      * thread executes is the RSA call (stage1.cpp::process_ins). This is the
      * path that works when no stack slot holds a usable return address --
-     * x86 VPIplayer hooks six candidates and reaches none of them. */
+     * x86 VPIplayer hooks six candidates and reaches none of them, and x64
+     * ngahost#7 has no code address in the frame at all
+     * (sub1-no-code-return-candidate). */
     stage1.landmarkSeen = true;
+    try {
+        stage1.landmarkTid = Process.getCurrentThreadId();
+    } catch (e) {
+        stage1.landmarkTid = null;
+    }
     /* Actually clear PAGE_GUARD here, not just the bookkeeping flag. The guard
      * spans whole pages, and the OS clears the guard bit only on the page
      * that faulted -- with a 4096-byte license the guard covers two pages, so
@@ -2244,7 +2261,9 @@ rpc.exports = {
                 rearmCapped: false,
                 retCandidates: [],
                 mpExptmod: null, callCount: 0, decSections: 0,
-                mpInts: null, firstSwapLogged: false, lastCall: null
+                mpInts: null, firstSwapLogged: false, lastCall: null,
+                landmarkSeen: false, landmarkTid: null, callWatchTries: 0,
+                path: null
             },
             licMapped: false,
             licCopy: null,
