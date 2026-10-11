@@ -1191,7 +1191,45 @@ function installWindowsHooks() {
                 resolveCopy(args[0].toString(), "UnmapViewOfFile");
             }
         }));
-    } else {
+    }
+
+    /* Does the protection leave the process inside the RSA call?
+     *
+     * Stage 2 arms a guard on the decrypted buffer and waits for the hash_3
+     * read. Rounds 21/22 armed it on every real completion and it was never
+     * hit, and the refresh that re-resolves the buffer never ran either -- not
+     * from the 20ms timer and not from the mp_exptmod hook's onLeave. That is
+     * exactly what it looks like if the process never comes back from that
+     * call. Logging the exit and its caller separates "the target died inside
+     * the call" from "the comparison happens inside the call, so arming after
+     * it is too late". */
+    for (const exportName of ["ExitProcess", "TerminateProcess",
+                              "RtlExitUserProcess"]) {
+        let exitAddress = Module.findExportByName(kernel32, exportName);
+        if (exitAddress === null) {
+            exitAddress = Module.findExportByName("ntdll.dll", exportName);
+        }
+        if (exitAddress === null) {
+            continue;
+        }
+        try {
+            plan.hooks.push(Interceptor.attach(exitAddress, {
+                onEnter: function () {
+                    let caller = "?";
+                    try {
+                        caller = this.returnAddress.toString();
+                    } catch (e) {
+                        /* keep the marker */
+                    }
+                    stage1Log("target-exit", exportName + " from " + caller);
+                }
+            }));
+        } catch (e) {
+            stage1Log("target-exit-hook-failed", exportName + ": " + String(e));
+        }
+    }
+
+    if (unmapView === null) {
         report.errors.push("UnmapViewOfFile not found");
     }
 }
@@ -1621,12 +1659,9 @@ function stage1BackInRsaExptmod(context) {
                     }
                 },
                 onLeave: function () {
-                    /* The RSA write has just landed. Refresh Stage 2's buffer
-                     * here, not on a timer: the protection reads hash_3
-                     * immediately after this call returns and then exits on the
-                     * mismatch, so the 20ms timeout added in 1a5f040 never fired
-                     * in most runs (round 21: six Stage 1 completions, two
-                     * rearms). */
+                    /* Unconditional: whether this runs at all is the whole
+                     * question (see the exit hooks in install()). */
+                    stage1Log("sub4-leave", "returned from " + destination);
                     try {
                         stage2RefreshBuffer();
                     } catch (e) {
