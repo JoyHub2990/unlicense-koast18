@@ -672,6 +672,49 @@ function stage2OnGuardAccess(details) {
         stage2DisarmGuard();
         return true;
     }
+    /* Two-stage arming, so nothing depends on the RSA call returning.
+     *
+     * The protection reads the output mp_int's dp field immediately after the
+     * call, and only then touches the buffer. Round 30 showed why arming from
+     * the hook's onLeave cannot work: refresh-entry appeared exactly once per
+     * run, with sub=0 and decLic=null (i.e. before Stage 1 completed), and never
+     * again -- the RSA call's own onLeave does not fire. So startStage2's guard
+     * stayed on the *pre-call* buffer page for the whole run and the real buffer
+     * was never guarded.
+     *
+     * The dp read is inside the struct page that is already guarded, and it
+     * yields the buffer address directly. Arm the second page from here and let
+     * the buffer read be the landmark. */
+    if (operation === "read" &&
+        address.compare(s2.decLic.add(mpIntDpOffset())) === 0) {
+        let buf = null;
+        try {
+            buf = address.readPointer();
+        } catch (e) {
+            buf = null;
+        }
+        if (buf !== null && !buf.isNull() &&
+            Process.findRangeByAddress(buf) !== null) {
+            s2.decLicBuf = buf;
+            const dpPageSize = Process.pageSize;
+            const dpPage = buf.add(HASH3_OFFSET).and(
+                ptr(dpPageSize - 1).not());
+            const already = dpPage.compare(s2.guardStart) === 0 ||
+                (s2.guardStart2 !== null &&
+                 dpPage.compare(s2.guardStart2) === 0);
+            stage2Log("dp-read", "buf=" + buf + " page=" + dpPage +
+                " alreadyGuarded=" + already);
+            if (!already) {
+                s2.guardStart2 = dpPage;
+                s2.guardLength2 = dpPageSize;
+                /* Arming from the exception handler would fault on the retrying
+                 * instruction; defer to the JS thread. */
+                setTimeout(stage2ArmGuard, 0);
+            }
+        }
+        stage2ScheduleRearm();
+        return true;
+    }
     const offset = stage2Hash3Offset(s2, address);
     const exact = stage2IsHash3Address(s2, address);
     if (operation !== "read" || offset < 0) {
