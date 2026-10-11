@@ -793,6 +793,27 @@ function startStage2(decLic) {
         }
         stage2Log("armed", "armed=" + armed +
             (error === null ? "" : " arm-error=" + error));
+        /* Open the comparison window now, without waiting for the guard.
+         *
+         * stage2FollowThreads -- the only entry to the Stalker window that does
+         * the cmp matching -- is reached solely from the guard's hash3-read
+         * branch (which sets sub = 2). So when the guard does not fire, the
+         * window never opens and the matcher never runs: rounds 37/38/39
+         * reported cmp-mem-shape (the scan) with cmp-site (the executed apply)
+         * at zero, which reads like "the protection never compares" but is
+         * really "we never looked".
+         *
+         * The guard existed only to learn hash_3 from the read the protection
+         * performs. That value is now taken straight from the buffer and is
+         * stable across runs (0x6501 at three different buffer addresses), so
+         * the guard is no longer needed to arm the matcher. The guard stays
+         * armed -- it costs nothing and still reports where the protection
+         * reads -- but it no longer gates the window. */
+        if (s2.sub === 1) {
+            s2.sub = 2;
+            stage2Log("following-now", "window opened without the guard");
+            setTimeout(stage2FollowThreads, 0);
+        }
     }, 0);
 }
 
