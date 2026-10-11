@@ -1473,6 +1473,8 @@ function stage1CallCandidate(context, destination) {
     const slots = plan.stage1KeySlots;
     const described = [];
     let matches = 0;
+    let ours = 0;
+    const keyMaterial = stage1KeyMaterial();
     const values = [];
     for (let i = 0; i < slots.length; i++) {
         const value = slotRead(context, slots[i]);
@@ -1484,8 +1486,23 @@ function stage1CallCandidate(context, destination) {
         if (shape !== null) {
             matches++;
         }
+        if (keyMaterial !== null &&
+            (value.equals(keyMaterial.key1.exp.struct) ||
+             value.equals(keyMaterial.key1.mod.struct) ||
+             value.equals(keyMaterial.key2.exp.struct) ||
+             value.equals(keyMaterial.key2.mod.struct))) {
+            ours++;
+        }
     }
-    if (matches === 0) {
+    /* A call whose arguments are already our own key structs is a *subsequent*
+     * mp_exptmod call, not a non-match. The protection reuses the same argument
+     * slots, so after the first swap they hold the struct we wrote -- whose
+     * `used` is 0, which looksLikeKeyMpInt rejects. Returning here on
+     * matches === 0 stopped the call count at 1 (ngahost#7: "matched 1
+     * key-shaped args", then every later call logged sub4-no-key-match and was
+     * never counted), and the completion branch (callCount > decSections) could
+     * never fire. */
+    if (matches === 0 && ours === 0) {
         /* Say why nothing matched instead of returning silently: with no log
          * this looked exactly like "the hook never fired" (callCount stayed
          * 0), which sent two runs chasing the wrong thing. */
@@ -1493,6 +1510,7 @@ function stage1CallCandidate(context, destination) {
         if (stage1.noMatchCalls <= 3) {
             stage1Log("sub4-no-key-match", "target " + destination +
                 " rsaKeys=" + (plan.rsaKeys === null ? "null" : "set") +
+                " matches=" + matches + " ours=" + ours +
                 " args: " + described.join(" | "));
         }
         return;
