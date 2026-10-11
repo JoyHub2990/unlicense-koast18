@@ -1543,6 +1543,26 @@ function buildMpInt(hexDigits, digitCount) {
     return { struct: mp, digits: digits };
 }
 
+/* An mp_int holding 1.
+ *
+ * Swapping this in as mp_exptmod's exponent turns the "decryption" into the
+ * identity: base^1 mod P = base (for base < P), so the buffer the protection
+ * decrypts into holds exactly the bytes we put in the licence file. That
+ * replaces the plaintext lottery -- rounds 24/26/27 reached the hash comparison
+ * on 1 completion in 5, because the garbage the swapped modulus produced only
+ * sometimes got past the protection's earlier checks -- with content we choose,
+ * which is the precondition for working out what it accepts. */
+function buildMpIntOne() {
+    const digits = Memory.alloc(4);
+    digits.writeU32(1);
+    const mp = Memory.alloc(mpIntDpOffset() + Process.pointerSize);
+    mp.writeS32(1);                   /* used  */
+    mp.writeS32(1);                   /* alloc */
+    mp.writeS32(0);                   /* sign = MP_ZPOS */
+    mp.add(mpIntDpOffset()).writePointer(digits);
+    return { struct: mp, digits: digits };
+}
+
 function stage1KeyMaterial() {
     const stage1 = plan.stage1;
     if (stage1.mpInts !== null || plan.rsaKeys === null) {
@@ -1554,7 +1574,9 @@ function stage1KeyMaterial() {
             mod: buildMpInt(plan.rsaKeys.mod1, plan.rsaKeys.mod1Len)
         },
         key2: {
-            exp: buildMpInt(plan.rsaKeys.exp2, plan.rsaKeys.exp2Len),
+            exp: plan.identityKey
+                ? buildMpIntOne()
+                : buildMpInt(plan.rsaKeys.exp2, plan.rsaKeys.exp2Len),
             mod: buildMpInt(plan.rsaKeys.mod2, plan.rsaKeys.mod2Len)
         }
     };
@@ -1562,7 +1584,8 @@ function stage1KeyMaterial() {
         "key1 exp=" + stage1.mpInts.key1.exp.struct +
         " mod=" + stage1.mpInts.key1.mod.struct +
         " key2 exp=" + stage1.mpInts.key2.exp.struct +
-        " mod=" + stage1.mpInts.key2.mod.struct);
+        " mod=" + stage1.mpInts.key2.mod.struct +
+        (plan.identityKey ? " identityKey=true" : ""));
     return stage1.mpInts;
 }
 
@@ -2829,6 +2852,10 @@ rpc.exports = {
          * calls the RSA routine once and then gives up, so the model's count is
          * never reached. */
         plan.stage1CompleteAfter = options.stage1CompleteAfter || 0;
+        /* Swap in an exponent of 1 so the protection's RSA decrypt becomes the
+         * identity and the decrypted buffer is the licence file verbatim. See
+         * buildMpIntOne. */
+        plan.identityKey = options.identityKey === true;
         plan.mainModuleName = main.name;
         Process.setExceptionHandler(function (details) {
             try {
