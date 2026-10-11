@@ -1739,9 +1739,14 @@ function stage1BackInRsaExptmod(context) {
                     }
                 },
                 onLeave: function () {
-                    /* Unconditional: whether this runs at all is the whole
-                     * question (see the exit hooks in install()). */
-                    stage1Log("sub4-leave", "returned from " + destination);
+                    /* Logged a few times only. It answered its question in
+                     * round 23 (the target does come back from the call), and
+                     * unconditional logging then produced 349,660 lines and a
+                     * 29MB job log in round 25. */
+                    plan.stage1.leaveLogs = (plan.stage1.leaveLogs || 0) + 1;
+                    if (plan.stage1.leaveLogs <= 3) {
+                        stage1Log("sub4-leave", "returned from " + destination);
+                    }
                     try {
                         stage2RefreshBuffer();
                     } catch (e) {
@@ -2045,6 +2050,7 @@ function stage1CallCandidate(context, destination) {
         /* dec_lic is mp_exptmod's output buffer, i.e. its 4th argument. Read
          * it from there: the PIN original's [esp+0x8c] frame offset is
          * x86-only and never matched on x64. */
+        let choseDecLic = false;
         for (const slot of plan.decLicArgSlots) {
             const value = slotRead(context, slot);
             if (!value.isNull()) {
@@ -2053,8 +2059,28 @@ function stage1CallCandidate(context, destination) {
                 report.stage1DecLic = stage1.decLic;
                 stage1Log("dec-lic-from-arg", "mp_exptmod destination " +
                     stage1.decLic + " (frame value was " + fromFrame + ")");
+                choseDecLic = true;
                 break;
             }
+        }
+        if (!choseDecLic) {
+            /* Two of round 25's three completions ended with dec_lic=null and
+             * were handed to Stage 2 as "skipped", with nothing saying why.
+             * Show what the slots actually held. */
+            stage1Log("dec-lic-none", "arg slots: " +
+                plan.decLicArgSlots.map(function (slot) {
+                    return slotRead(context, slot).toString();
+                }).join(" ") + " frame candidates: " +
+                plan.decLicCandidates.map(function (offset) {
+                    let value = "unreadable";
+                    try {
+                        value = context[SP_REG].add(offset).readPointer()
+                            .toString();
+                    } catch (e) {
+                        /* leave the marker */
+                    }
+                    return "[sp+" + offset.toString(16) + "]=" + value;
+                }).join(" "));
         }
     } else {
         stage1Log("rsa-call-again", "call#" + stage1.callCount + " at " +
