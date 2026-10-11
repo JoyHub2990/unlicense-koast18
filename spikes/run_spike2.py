@@ -207,6 +207,7 @@ def run_agent(exe: Path, workdir: Path, head_hex: str, nt_path: str,
 
     status = None
     stage0_reported = False
+    landmark_at = None
     deadline = time.time() + duration
     last_report = 0.0
     while time.time() < deadline:
@@ -236,6 +237,20 @@ def run_agent(exe: Path, workdir: Path, head_hex: str, nt_path: str,
             break
         if status.get("stage1Complete") or (status.get("stage1Sub") or 0) >= 6:
             print("  stage1 complete", flush=True)
+            break
+        # The landmark, when it is taken at all, is taken within ~45s and the
+        # target then exits on the rejected license. Waiting out the rest of
+        # the window only adds dead time to every run that did hit, so close
+        # the run a short while after the landmark and let the repeat counter
+        # buy more attempts instead.
+        if (status.get("stage1Sub") or 0) >= 2:
+            if landmark_at is None:
+                landmark_at = time.time()
+                print("  landmark taken (stage1Sub>=2); collecting "
+                      "sub-stage data", flush=True)
+            elif time.time() - landmark_at >= 25:
+                print("  landmark window closed", flush=True)
+                break
         if time.time() - last_report >= 15:
             last_report = time.time()
             print(f"  ... {status}", flush=True)

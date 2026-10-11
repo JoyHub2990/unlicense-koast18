@@ -30,6 +30,18 @@ on:
         description: "Run each target N times (hit rate for flaky landmarks)"
         type: string
         default: "1"
+      duration:
+        description: "Seconds per attempt. The landmark, when it happens, shows up within ~45s; a longer window only buys dead time."
+        type: string
+        default: "90"
+      modes_x86:
+        description: "x86 modes: normal,deferred. x86 normal is a proven dead weight (12/12 runs never reached the license)."
+        type: string
+        default: "deferred"
+      modes_x64:
+        description: "x64 modes: normal,deferred"
+        type: string
+        default: "normal,deferred"
   push:
     branches: [main, dev]
     paths:
@@ -172,19 +184,19 @@ jobs:
           Test-Path results/manifest.json
 
       - name: Spike 2 against real samples (Stage 0)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.samples }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.samples && contains((matrix.python_arch == 'x86' && inputs.modes_x86) || (matrix.python_arch == 'x64' && inputs.modes_x64) || 'deferred', 'normal') }}
         continue-on-error: true
-        run: python spikes/run_spike2.py --ci --repeat ${{ inputs.repeat || 1 }} --dummy results/spike2_dummy/regkey.dat --targets ${{ (matrix.python_arch == 'x86' && inputs.targets_x86) || (matrix.python_arch == 'x64' && inputs.targets_x64) || matrix.targets }} --duration 240
+        run: python spikes/run_spike2.py --ci --repeat ${{ inputs.repeat || 1 }} --dummy results/spike2_dummy/regkey.dat --targets ${{ (matrix.python_arch == 'x86' && inputs.targets_x86) || (matrix.python_arch == 'x64' && inputs.targets_x64) || matrix.targets }} --duration ${{ inputs.duration || 90 }}
 
       # Same samples, same agent, but Stalker is not started until the license
       # file is mapped. Stalker costs ~100x, so with it on from the start the
       # protection's own unpacking crawls; a frozen byte-store counter on
-      # ngahost/drchostvpi is the symptom. This run says whether the samples
-      # get further when the unpacking is allowed to run at native speed.
+      # ngahost/drchostvpi is the symptom. This is the mode that actually
+      # reaches the license on x86, so it is x86's default.
       - name: Spike 2 against real samples (deferred tracing)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.samples }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.samples && contains((matrix.python_arch == 'x86' && inputs.modes_x86) || (matrix.python_arch == 'x64' && inputs.modes_x64) || 'deferred', 'deferred') }}
         continue-on-error: true
-        run: python spikes/run_spike2.py --ci --defer-tracing --repeat ${{ inputs.repeat || 1 }} --dummy results/spike2_dummy/regkey.dat --targets ${{ (matrix.python_arch == 'x86' && inputs.targets_x86) || (matrix.python_arch == 'x64' && inputs.targets_x64) || matrix.targets }} --duration 240
+        run: python spikes/run_spike2.py --ci --defer-tracing --repeat ${{ inputs.repeat || 1 }} --dummy results/spike2_dummy/regkey.dat --targets ${{ (matrix.python_arch == 'x86' && inputs.targets_x86) || (matrix.python_arch == 'x64' && inputs.targets_x64) || matrix.targets }} --duration ${{ inputs.duration || 90 }}
 
       - name: Upload spike 2 results
         if: always()
