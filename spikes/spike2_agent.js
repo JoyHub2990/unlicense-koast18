@@ -443,13 +443,21 @@ function stage2IsHash3Address(s2, address) {
  * and dp + HASH3_OFFSET is the value Stage 2 is looking for. */
 function stage2RefreshBuffer() {
     const s2 = stage2State();
+    /* Entry line, capped rather than suppressed. The earlier "quiet after two
+     * refreshes" rule hid every refresh in the real runs (round 29: three
+     * completions, one rearm line, and that one was the mimic's), which made
+     * "the refresh never ran" and "the refresh ran and did nothing"
+     * indistinguishable -- the same trap as the other logging gaps. */
+    s2.refreshes = (s2.refreshes || 0) + 1;
+    const quiet = s2.refreshes > 6;
+    if (!quiet) {
+        stage2Log("refresh-entry", "#" + s2.refreshes +
+            " active=" + s2.active + " sub=" + s2.sub +
+            " decLic=" + s2.decLic);
+    }
     if (!s2.active || s2.sub !== 1 || s2.decLic === null) {
         return;
     }
-    /* Called from the mp_exptmod hook's onLeave, so it runs once per RSA call;
-     * only the first couple of refreshes are worth logging. */
-    s2.refreshes = (s2.refreshes || 0) + 1;
-    const quiet = s2.refreshes > 2;
     let candidate = null;
     try {
         candidate = s2.decLic.add(IS_IA32 ? 0x0c : 0x10).readPointer();
