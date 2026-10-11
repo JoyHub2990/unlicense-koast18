@@ -595,6 +595,7 @@ def ci_pass(args) -> int:
         # far did not reproduce: one observation is not a result, and a hit
         # rate is what says whether the guard/landmark race is real or whether
         # the one hit was process-teardown noise.
+        stage1_hits = 0
         for attempt in range(1, args.repeat + 1):
             tag = label if args.repeat == 1 else f"{label}#{attempt}"
             print(f"\n=== {tag}: {exe.name} (v{target['version']}) ===",
@@ -620,6 +621,15 @@ def ci_pass(args) -> int:
                 mark = "PASS" if check["ok"] else "FAIL"
                 print(f"  [{mark}] {name}: {check['detail']}", flush=True)
             print(f"  -> {verdict['status']}", flush=True)
+            # One sample at a time: once this target has produced the number of
+            # Stage 1 completions asked for, the remaining attempts are pure
+            # dead time (a non-hitting attempt burns the whole duration).
+            if verdict["checks"].get("stage1-rsa-chain", {}).get("ok"):
+                stage1_hits += 1
+            if args.stop_after_hits and stage1_hits >= args.stop_after_hits:
+                print(f"  {stage1_hits} Stage 1 completion(s) collected; "
+                      f"stopping this target early", flush=True)
+                break
 
     RESULTS.mkdir(exist_ok=True)
     suffix = "_deferred" if args.defer_tracing else ""
@@ -665,6 +675,13 @@ def main() -> int:
     parser.add_argument("--repeat", type=int, default=1,
                         help="run each target N times (a single observation of "
                              "a flaky landmark is not a result)")
+    parser.add_argument("--stop-after-hits", type=int, default=0,
+                        help="stop a target's attempts once N Stage 1 "
+                             "completions have been collected (0 = run them "
+                             "all). Working one sample to the end beats "
+                             "sweeping many: the remaining attempts are dead "
+                             "time, and progress that lands on a different "
+                             "sample each round cannot be built on.")
     args = parser.parse_args()
 
     RESULTS.mkdir(exist_ok=True)

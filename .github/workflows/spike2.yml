@@ -27,9 +27,13 @@ on:
         type: string
         default: ""
       repeat:
-        description: "Run each target N times (hit rate for flaky landmarks)"
+        description: "Run each target this many times (the landmark is a flaky ~15% event)"
         type: string
         default: "1"
+      stop_after_hits:
+        description: "Stop a target's attempts after N Stage 1 completions (0 = run them all)"
+        type: string
+        default: "0"
       duration:
         description: "Seconds per attempt. The landmark, when it happens, shows up within ~45s; a longer window only buys dead time."
         type: string
@@ -210,7 +214,7 @@ jobs:
           # (ngahost#9: swap call#1 and no call#2). End Stage 1 on that first
           # call, with the swapped key in place, so Stage 2 gets to run.
           STAGE1_COMPLETE_AFTER: "1"
-        run: python spikes/run_spike2.py --ci --defer-tracing --repeat ${{ inputs.repeat || 1 }} --dummy results/spike2_dummy/regkey.dat --targets ${{ (matrix.python_arch == 'x86' && inputs.targets_x86) || (matrix.python_arch == 'x64' && inputs.targets_x64) || matrix.targets }} --duration ${{ inputs.duration || 90 }}
+        run: python spikes/run_spike2.py --ci --defer-tracing --repeat ${{ inputs.repeat || 1 }} --stop-after-hits ${{ inputs.stop_after_hits || 0 }} --dummy results/spike2_dummy/regkey.dat --targets ${{ (matrix.python_arch == 'x86' && inputs.targets_x86) || (matrix.python_arch == 'x64' && inputs.targets_x64) || matrix.targets }} --duration ${{ inputs.duration || 90 }}
 
       - name: Upload spike 2 results
         if: always()
