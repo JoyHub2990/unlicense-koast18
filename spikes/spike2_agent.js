@@ -1327,14 +1327,31 @@ function stage1BackInRsaExptmod(context) {
         }
     }
     stage1.decLic = chosen !== null ? chosen.toString() : null;
-    stage1.sub = 3;
     stage1Log("sub2-back-in-rsaexptmod", "pc=" + context[PC_REG] +
         " dec_lic=" + stage1.decLic + " frame: " + observed.join(" "));
+
+    /* Validate the candidate before committing to it. Several stack slots hold
+     * code addresses, only one of them returns into rsa_exptmod, and hooking
+     * the wrong one silently produces garbage: ngahost#2/#6 reached sub-stage 2
+     * with pc=0x140237d16, dec_lic=null, an all-garbage frame, and
+     * "0 direct calls in the function" -- a real rsa_exptmod always contains
+     * the direct call to mp_exptmod. Reject and stay in sub-stage 2 so the next
+     * hooked candidate gets its turn. */
+    const destinations = stage1ScanCalls(ptr(stage1.retToRsa));
+    if (destinations.length === 0) {
+        stage1.rejectedCandidates = (stage1.rejectedCandidates || 0) + 1;
+        stage1Log("sub2-reject", "pc=" + context[PC_REG] + " retToRsa=" +
+            stage1.retToRsa + " dec_lic=" + stage1.decLic +
+            " no direct calls -- not rsa_exptmod, waiting for another " +
+            "candidate (rejected " + stage1.rejectedCandidates + ")");
+        stage1.sub = 2;
+        return;
+    }
+    stage1.sub = 3;
 
     /* Sub-stages 3-5 in one step: scan this function's code for direct calls
      * and hook each destination; the RSA call is recognised by its arguments
      * being libtommath mp_ints of the expected digit counts. */
-    const destinations = stage1ScanCalls(ptr(stage1.retToRsa));
     stage1Log("sub3-call-candidates", destinations.length +
         " direct calls in the function: " +
         destinations.slice(0, 12).map(function (address) {
