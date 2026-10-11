@@ -1177,6 +1177,26 @@ function stage2ApplyCmp(context, site) {
     }
     const regVal = found.value.and(0xffff).toUInt32();
 
+    /* Never key the match on zero.
+     *
+     * Round 40 reached stage2 complete on a real sample three times, but every
+     * one of them matched with ours=0x0: the reference value had been clobbered
+     * to zero by the time the site executed, and "the register operand is zero"
+     * matches any comparison that loads a zero -- which is common and proves
+     * nothing. Re-read hash_3 from the buffer here, and refuse to match when it
+     * is still zero. */
+    if (s2.hash3 === 0 && s2.decLicBuf !== null) {
+        try {
+            s2.hash3 = s2.decLicBuf.add(HASH3_OFFSET).readU16();
+        } catch (e) {
+            /* leave it; the zero check below will refuse the match */
+        }
+    }
+    if (s2.hash3 === 0) {
+        s2.applyNoOurs = (s2.applyNoOurs || 0) + 1;
+        return;
+    }
+
     s2.cmpCandidates++;
     /* Log every site's operands, not just the matches.
      *
