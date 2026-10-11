@@ -408,6 +408,65 @@ function stage2IsHash3Address(s2, address) {
         address.compare(s2.decLicBuf.add(HASH3_OFFSET)) === 0;
 }
 
+/* Re-resolve the digit buffer after the RSA call has actually run.
+ *
+ * startStage2 is called from the mp_exptmod hook's onEnter, i.e. *before* the
+ * call, and at that moment the output mp_int Y is uninitialised -- its digit
+ * pointer refers to a small or empty allocation. Round 20 showed exactly that:
+ * dec_lic=0x14f890 resolved to buf=0x718600, and bufHash3 came back
+ * "unreadable", so neither guarded page was the plaintext buffer and the guard
+ * was never hit (stage2Sub stayed 1 on both real completions).
+ *
+ * A tick later mp_exptmod has written Y, so dp points at the decrypted license
+ * and dp + HASH3_OFFSET is the value Stage 2 is looking for. */
+function stage2RefreshBuffer() {
+    const s2 = stage2State();
+    if (!s2.active || s2.sub !== 1 || s2.decLic === null) {
+        return;
+    }
+    let candidate = null;
+    try {
+        candidate = s2.decLic.add(IS_IA32 ? 0x0c : 0x10).readPointer();
+    } catch (e) {
+        candidate = null;
+    }
+    if (candidate === null || candidate.isNull()) {
+        stage2Log("rearm", "no digit pointer at " + s2.decLic);
+        return;
+    }
+    if (Process.findRangeByAddress(candidate) === null) {
+        stage2Log("rearm", "buf " + candidate + " not mapped");
+        return;
+    }
+    const pageSize = Process.pageSize;
+    const page = candidate.add(HASH3_OFFSET).and(ptr(pageSize - 1).not());
+    s2.decLicBuf = candidate;
+    let hash3 = "unreadable";
+    try {
+        hash3 = "0x" + candidate.add(HASH3_OFFSET).readU16().toString(16);
+    } catch (e) {
+        /* leave the marker */
+    }
+    if (page.compare(s2.guardStart) === 0 ||
+        (s2.guardStart2 !== null && page.compare(s2.guardStart2) === 0)) {
+        stage2Log("rearm", "buf=" + candidate + " hash3=" + hash3 +
+            " page already guarded (" + page + ")");
+        return;
+    }
+    s2.guardStart2 = page;
+    s2.guardLength2 = pageSize;
+    let armed = false;
+    let error = null;
+    try {
+        armed = stage2ArmGuard();
+    } catch (e) {
+        error = String(e);
+    }
+    stage2Log("rearm", "buf=" + candidate + " hash3=" + hash3 +
+        " guard2=" + page + " armed=" + armed +
+        (error === null ? "" : " arm-error=" + error));
+}
+
 /* Same rule as Stage 1: re-arm only from the JS thread, never inside the
  * exception handler, or the retrying instruction faults on itself forever. */
 function stage2ScheduleRearm() {
@@ -1450,6 +1509,10 @@ function stage1MpExptmodEnter(context) {
             try {
                 startStage2(stage1.decLic);
                 stage1Log("stage2-armed", "sub=" + plan.stage2.sub);
+                /* The output mp_int is still empty at this point (we are inside
+                 * the call's onEnter); re-resolve its digit buffer once the RSA
+                 * write has happened. See stage2RefreshBuffer. */
+                setTimeout(stage2RefreshBuffer, 20);
             } catch (e) {
                 stage1Log("stage2-start-failed", String(e));
             }
@@ -1738,6 +1801,9 @@ function stage1CallWatch(context, site) {
             disarmGuard();
             if (decLic !== null && decLic !== undefined) {
                 startStage2(decLic);
+                /* This tick already runs after the call returned, so the
+                 * output mp_int may be populated; refresh either way. */
+                stage2RefreshBuffer();
             }
         } catch (e) {
             stage1Log("call-watch-complete-error", String(e));
@@ -1874,6 +1940,10 @@ function stage1CallCandidate(context, destination) {
             try {
                 startStage2(stage1.decLic);
                 stage1Log("stage2-armed", "sub=" + plan.stage2.sub);
+                /* The output mp_int is still empty at this point (we are inside
+                 * the call's onEnter); re-resolve its digit buffer once the RSA
+                 * write has happened. See stage2RefreshBuffer. */
+                setTimeout(stage2RefreshBuffer, 20);
             } catch (e) {
                 stage1Log("stage2-start-failed", String(e));
             }
