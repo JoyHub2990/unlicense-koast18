@@ -1,0 +1,167 @@
+name: pin
+
+# The original whatlicense toolchain (Intel PIN + wl-extract) run on a real
+# license-gated sample, as the reference implementation for the Frida port.
+#
+# Why: the Frida port's remaining question is what the protection actually does
+# around the license verification -- how many times it calls mp_exptmod, which
+# memory reads touch the license copy, and in what order. PIN's per-memory-read
+# callbacks see all of that natively; the port replaced them with a guard page
+# and only ever sees the accesses it armed for. Running the original on the same
+# sample gives the ground truth to port against, and shows which of PIN's
+# primitives have a cheap Frida equivalent.
+#
+# x86 only (whatlicense supports IA-32), so target the x86 samples.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Executable inside the samples-vpi release to run"
+        type: string
+        default: "VPIplayer.exe"
+      timeout_s:
+        description: "Seconds to let PIN run before killing it"
+        type: string
+        default: "600"
+      pin_zip:
+        description: "Intel PIN Windows kit"
+        type: string
+        default: "https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.28-98749-g6643ecee5-msvc-windows.zip"
+
+jobs:
+  extract:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exclude workspace and PIN from Windows Defender
+        shell: pwsh
+        run: |
+          try { Add-MpPreference -ExclusionPath 'D:\a' -ErrorAction Stop; Write-Host 'exclusion added' }
+          catch { Write-Host "exclusion failed: $_" }
+
+      - name: Fetch Intel PIN
+        shell: pwsh
+        run: |
+          $url = "${{ inputs.pin_zip }}"
+          Write-Host "downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile pin.zip -UseBasicParsing
+          Write-Host "pin.zip: $((Get-Item pin.zip).Length) bytes"
+          Expand-Archive pin.zip -DestinationPath .
+          $dir = Get-ChildItem -Directory -Filter 'pin-*' | Select-Object -First 1
+          if (-not $dir) { throw "no pin-* directory after extracting" }
+          Rename-Item $dir.FullName pin
+          Write-Host "pin root:"; Get-ChildItem pin | Select-Object -First 20 Name
+
+      - name: Put whatlicense in the PIN tools directory
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/ret2vibec/whatlicense.git whatlicense-src
+          $dst = "pin\source\tools\whatlicense"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item -Recurse -Force whatlicense-src\* $dst\
+          Remove-Item -Recurse -Force "$dst\.git" -ErrorAction SilentlyContinue
+          # windows-2022 ships VS2022; the project files target the v142 toolset.
+          Get-ChildItem $dst -Recurse -Include *.vcxproj | ForEach-Object {
+            (Get-Content $_.FullName -Raw) -replace 'v142', 'v143' |
+              Set-Content $_.FullName -NoNewline
+            Write-Host "retargeted $($_.Name) to v143"
+          }
+
+      - name: Build wl-lic and wl-extract (x86)
+        shell: pwsh
+        run: |
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -products * -requires Microsoft.Component.MSBuild `
+            -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw "MSBuild not found" }
+          Write-Host "msbuild: $msbuild"
+          Push-Location pin\source\tools\whatlicense
+          & $msbuild wl-lic.vcxproj /p:Configuration=Release /p:Platform=Win32 /m /v:minimal
+          if ($LASTEXITCODE -ne 0) { Write-Host "wl-lic build rc=$LASTEXITCODE" }
+          & $msbuild wl-extract.vcxproj "/p:Configuration=Pin 3.27+" /p:Platform=Win32 /m /v:minimal
+          if ($LASTEXITCODE -ne 0) { Write-Host "wl-extract build rc=$LASTEXITCODE" }
+          Pop-Location
+          Get-ChildItem pin\source\tools\whatlicense -Recurse -Include wl-lic.exe,wl-extract.dll |
+            ForEach-Object { Write-Host "built: $($_.FullName) $($_.Length)" }
+
+      - name: Assert the tools were built
+        shell: pwsh
+        run: |
+          $lic = Get-ChildItem pin\source\tools\whatlicense -Recurse -Filter wl-lic.exe | Select-Object -First 1
+          $ext = Get-ChildItem pin\source\tools\whatlicense -Recurse -Filter wl-extract.dll | Select-Object -First 1
+          if (-not $lic) { throw "wl-lic.exe was not built" }
+          if (-not $ext) { throw "wl-extract.dll was not built" }
+          Write-Host "wl-lic:      $($lic.FullName)"
+          Write-Host "wl-extract:  $($ext.FullName)"
+
+      - name: Fetch the sample
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.SAMPLES_TOKEN }}
+        run: |
+          if (-not $env:GH_TOKEN) { throw "SAMPLES_TOKEN secret is not set" }
+          gh release download samples-vpi --repo koast18/wl-samples --dir samples --clobber
+          Get-ChildItem samples | ForEach-Object { Write-Host "$($_.Name) $($_.Length)" }
+
+      - name: Build the dummy license and run wl-extract
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $root = (Get-Location).Path
+          $bin = Split-Path (Get-ChildItem pin\source\tools\whatlicense -Recurse -Filter wl-lic.exe | Select-Object -First 1).FullName
+          $ext = (Get-ChildItem pin\source\tools\whatlicense -Recurse -Filter wl-extract.dll | Select-Object -First 1).FullName
+          $pin = Join-Path $root 'pin\pin.exe'
+          Push-Location samples
+          & "$bin\wl-lic.exe" -d regkey.dat -r regkey.rsa
+          Write-Host "wl-lic rc=$LASTEXITCODE"
+          Get-ChildItem regkey.* | ForEach-Object { Write-Host "$($_.Name) $($_.Length)" }
+          $target = "${{ inputs.target }}"
+          $log = Join-Path $root 'wl_log.txt'
+          Write-Host "running: $pin -t $ext -d regkey.dat -r regkey.rsa -o $log -- $target"
+          $p = Start-Process -FilePath $pin `
+            -ArgumentList @('-t', $ext, '-d', 'regkey.dat', '-r', 'regkey.rsa',
+                            '-o', $log, '--', (Join-Path (Get-Location).Path $target)) `
+            -NoNewWindow -PassThru
+          $deadline = [int]"${{ inputs.timeout_s }}"
+          if (-not $p.WaitForExit($deadline * 1000)) {
+            Write-Host "PIN did not exit within $deadline s -- killing"
+            try { $p.Kill() } catch {}
+          } else {
+            Write-Host "PIN exited with $($p.ExitCode)"
+          }
+          Pop-Location
+          if (Test-Path $log) {
+            Write-Host "===== wl_log.txt (tail 200) ====="
+            Get-Content $log -Tail 200 | ForEach-Object { Write-Host $_ }
+          } else {
+            Write-Host "no log file produced"
+          }
+
+      - name: Summarise the extraction log
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path wl_log.txt)) { Write-Host "no wl_log.txt"; exit 0 }
+          $sum = "## wl-extract on ${{ inputs.target }}`n`n"
+          foreach ($pat in 'Stage ', 'main_hash', 'dec_sections', 'mp_exptmod', 'sub_stage', 'HWID', 'Complete') {
+            $hits = Select-String -Path wl_log.txt -Pattern $pat -SimpleMatch |
+              Select-Object -First 12
+            foreach ($h in $hits) { $sum += "- ``$($h.Line.Trim())```n" }
+          }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $sum
+          Write-Host $sum
+
+      - name: Upload PIN results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pin-results
+          path: |
+            wl_log.txt
+            samples/regkey.dat
+            samples/regkey.rsa
+          if-no-files-found: ignore
+          retention-days: 14
