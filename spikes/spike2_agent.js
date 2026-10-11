@@ -302,6 +302,28 @@ const WIDE_REGISTERS = {
     sp: "rsp", bp: "rbp", si: "rsi", di: "rdi"
 };
 
+/* The CpuContext property to write a 16-bit operand's parent through.
+ * Candidates in the same order stage2RegValue reads them, because which name a
+ * CpuContext exposes depends on the architecture (x64 exposes rax, not eax). */
+function stage2RegWriteName(context, regName) {
+    const candidates = [];
+    const parent = WORD_REGISTERS[regName];
+    if (parent !== undefined) {
+        candidates.push(parent);
+    }
+    const wide = WIDE_REGISTERS[regName];
+    if (wide !== undefined) {
+        candidates.push(wide);
+    }
+    candidates.push(regName);
+    for (const name of candidates) {
+        if (context[name] !== undefined && context[name] !== null) {
+            return name;
+        }
+    }
+    return null;
+}
+
 /* The register holding a 16-bit operand's value. Candidates are tried in turn
  * because which name a CpuContext exposes depends on the architecture. */
 function stage2RegValue(context, regName) {
@@ -919,9 +941,22 @@ function stage2ApplyCmp(context, site) {
         context[base].writeU16(expected);
         stage2Log("bypass", "[" + base + "] <- 0x" + expected.toString(16));
     } else {
-        const upper = context[parent].and(ptr(0xffff).not());
-        context[parent] = upper.or(ptr(expected & 0xffff));
-        stage2Log("bypass", regName + " <- 0x" + expected.toString(16));
+        /* Write the expected value through the register operand's parent.
+         *
+         * `parent` was never defined in this scope: the write threw, the
+         * caller's catch swallowed it, and the run ended with hash3-found and
+         * no bypass at all (round 24, the first real sample to get this far:
+         * mem[rsi]=0x43 r10w=0x0 ours=0x0, then silence). WORD_REGISTERS
+         * already maps r10w -> r10; use it, and say so if the name is missing
+         * instead of failing silently again. */
+        const writeName = stage2RegWriteName(context, regName);
+        if (writeName === null) {
+            stage2Log("bypass-no-register", "reg=" + regName);
+            return;
+        }
+        const upper = context[writeName].and(ptr(0xffff).not());
+        context[writeName] = upper.or(ptr(expected & 0xffff));
+        stage2Log("bypass", writeName + " <- 0x" + expected.toString(16));
     }
     s2.neutralised++;
     stage2Unfollow();
