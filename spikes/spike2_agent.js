@@ -598,8 +598,20 @@ function startStage2(decLic) {
         s2.hash3 = 0;
     }
     const pageSize = Process.pageSize;
+    /* Guard a span, not a single page.
+     *
+     * Round 31 armed the struct page (dec_lic + 0x33) and the pre-call dp page,
+     * and the protection touched neither -- not even a write, although the RSA
+     * call must write its output somewhere. So dec_lic (the 4th argument) is not
+     * the output buffer we assumed, and the real one is allocated inside
+     * mp_exptmod; round 24's occasional hit was that allocation happening to
+     * land on the pre-call dp page.
+     *
+     * Covering 64KB around each candidate turns "the protection reads somewhere
+     * else in this heap" into a guard-hit with an address, instead of silence. */
+    const span = 0x10000;
     s2.guardStart = s2.decLic.add(HASH3_OFFSET).and(ptr(pageSize - 1).not());
-    s2.guardLength = pageSize;
+    s2.guardLength = span;
     s2.guardStart2 = null;
     s2.guardLength2 = 0;
     if (s2.decLicBuf !== null) {
@@ -607,7 +619,7 @@ function startStage2(decLic) {
             ptr(pageSize - 1).not());
         if (second.compare(s2.guardStart) !== 0) {
             s2.guardStart2 = second;
-            s2.guardLength2 = pageSize;
+            s2.guardLength2 = span;
         }
     }
     /* Arm *outside* the log call. stage2ArmGuard() used to be evaluated as an
