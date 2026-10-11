@@ -477,6 +477,26 @@ function stage2RefreshBuffer() {
     } catch (e) {
         /* leave the marker */
     }
+    /* Dump the head of the decrypted buffer, once.
+     *
+     * Rounds 24/26/27 armed Stage 2 on 2, 3 and 1 real completions and got 5, 0
+     * and 0 guard hits: the protection sometimes never touches either guarded
+     * page, i.e. it gives up *before* the hash_3 comparison. Whether it does is
+     * a property of the plaintext the swap produced, not of our timing -- so
+     * the plaintext is the thing to look at. This is the input for making the
+     * content deterministic (whatlicense's stage 4-5) instead of re-rolling the
+     * lottery. */
+    if (s2.bufHeadLogged !== true) {
+        s2.bufHeadLogged = true;
+        let head = "unreadable";
+        try {
+            head = hex(new Uint8Array(candidate.readByteArray(0x40)));
+        } catch (e) {
+            /* leave the marker */
+        }
+        stage2Log("buf-head", "buf=" + candidate + " licSize=" +
+            plan.licSize + " head=" + head);
+    }
     if (page.compare(s2.guardStart) === 0 ||
         (s2.guardStart2 !== null && page.compare(s2.guardStart2) === 0)) {
         if (!quiet) {
