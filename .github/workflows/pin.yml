@@ -30,7 +30,7 @@ on:
         default: "gh:koast18/wl-samples:pin-kit"
 
 concurrency:
-  group: pin-${{ github.ref }}
+  group: pin-${{ github.ref }}-${{ inputs.target }}
   cancel-in-progress: true
 
 jobs:

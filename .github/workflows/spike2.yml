@@ -49,7 +49,11 @@ on:
       - ".github/workflows/spike2.yml"
 
 concurrency:
-  group: spike2-${{ github.ref }}
+  # Include the event and the run's own configuration: a push-triggered sanity
+  # run must not cancel a dispatched real-sample run (and two dispatches with
+  # different targets are genuinely different work). Re-running the *same*
+  # configuration still cancels the older attempt, which is the point.
+  group: spike2-${{ github.ref }}-${{ github.event_name }}-${{ inputs.targets_x86 }}-${{ inputs.targets_x64 }}-${{ inputs.modes_x64 }}
   cancel-in-progress: true
 
 env:
