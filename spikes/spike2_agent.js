@@ -822,6 +822,54 @@ function install(iterator) {
                 });
             }
         }
+        /* PIN's Stage 1 does not guess a return address: it waits for the next
+         * direct call executed after the license read and takes its
+         * destination as mp_exptmod (wl-extract stage1.cpp::process_ins). On
+         * x86 VPIplayer all six hooked return-address candidates went
+         * unreached, so port the mechanism itself rather than the guess.
+         * The callout is emitted for every direct call but returns on its
+         * first line until the landmark has been taken, and gives up after a
+         * few tries -- the expensive part (the argument fingerprint) only runs
+         * for those few. */
+        if (plan.callWatch && insn.mnemonic === "call" && !system) {
+            let dest = null;
+            try {
+                if (Memory.readU8(address) === 0xE8) {
+                    const rel = Memory.readS32(address.add(1));
+                    dest = address.add(5 + rel);
+                }
+            } catch (e) {
+                dest = null;
+            }
+            if (dest !== null) {
+                const site = { address: address.toString(), dest: dest };
+                iterator.putCallout(function (context) {
+                    const stage1 = plan.stage1;
+                    if (stage1 === undefined || !stage1.landmarkSeen ||
+                        stage1.path === "ret") {
+                        return;
+                    }
+                    if (!stage1.mpExptmod) {
+                        /* Still looking for the RSA call: the fingerprint only
+                         * runs for the first few candidates after the read. */
+                        if (stage1.callWatchTries >= 5) {
+                            return;
+                        }
+                    } else if (site.dest.toString() !== stage1.mpExptmod) {
+                        /* Identified: only its own call sites are interesting,
+                         * so the expensive fingerprint is skipped for every
+                         * other call in the process. */
+                        return;
+                    }
+                    try {
+                        stage1CallWatch(context, site);
+                    } catch (e) {
+                        /* never let a callout kill the trace */
+                    }
+                });
+            }
+        }
+
         iterator.keep();
     }
 }
@@ -1465,11 +1513,108 @@ function looksLikeKeyMpInt(pointer) {
 
 /* Called at the entry of every direct call inside rsa_exptmod: the RSA call
  * is the one whose arguments are the key mp_ints. */
+/* The PIN mechanism, ported. wl-extract's Stage 1 does not guess a return
+ * address: process_ins waits for the next direct call executed after the
+ * license read and takes its destination as mp_exptmod. Everything the swap
+ * needs is in that call's arguments, so nothing has to be hooked out of band
+ * and the callout that caught the call performs the swap itself.
+ *
+ * Only the memory accesses and the log happen here; anything that calls into
+ * the agent (Interceptor, guard re-protection, Stage 2) is deferred, because a
+ * Frida API called from inside a Stalker callout deadlocks the target thread. */
+function stage1CallWatch(context, site) {
+    const stage1 = plan.stage1;
+    stage1.callWatchTries = (stage1.callWatchTries || 0) + 1;
+
+    const keys = stage1KeyMaterial();
+    const slots = plan.stage1KeySlots;
+    const described = [];
+    let matches = 0;
+    let ours = 0;
+    for (let i = 0; i < slots.length; i++) {
+        const value = slotRead(context, slots[i]);
+        const shape = looksLikeKeyMpInt(value);
+        described.push("arg" + i + "=" + value + " " +
+            (shape === null ? describeMpInt(value) : "MP_INT" +
+                JSON.stringify(shape.used)));
+        if (shape !== null) {
+            matches++;
+        }
+        if (keys !== null &&
+            (value.equals(keys.key1.exp.struct) ||
+             value.equals(keys.key1.mod.struct) ||
+             value.equals(keys.key2.exp.struct) ||
+             value.equals(keys.key2.mod.struct))) {
+            ours++;
+        }
+    }
+    stage1Log("call-watch", "try#" + stage1.callWatchTries + " " +
+        site.address + " -> " + site.dest + " matches=" + matches +
+        " ours=" + ours + " " + described.join(" | "));
+    if (matches === 0 && ours === 0) {
+        return;
+    }
+
+    if (!stage1.mpExptmod) {
+        stage1.mpExptmod = site.dest.toString();
+        stage1.sub = 5;
+        stage1.path = "call";
+        for (const slot of plan.decLicArgSlots) {
+            const value = slotRead(context, slot);
+            if (!value.isNull()) {
+                stage1.decLic = value.toString();
+                report.stage1DecLic = stage1.decLic;
+                stage1Log("dec-lic-from-arg", "call-watch destination " +
+                    stage1.decLic + " (frame value was " +
+                    report.stage1DecLic + ")");
+                break;
+            }
+        }
+        stage1Log("sub4-found-mp_exptmod", "call-watch " + site.dest +
+            " matched " + matches + " key-shaped args: " +
+            described.join(" | "));
+    }
+
+    stage1.callCount++;
+    if (stage1.callCount <= stage1.decSections) {
+        if (keys !== null) {
+            slotWrite(context, slots[0], keys.key2.exp.struct);
+            slotWrite(context, slots[1], keys.key2.mod.struct);
+        }
+        stage1Log("swap", "call#" + stage1.callCount + " <- rsa_key_2");
+        return;
+    }
+    if (keys !== null) {
+        slotWrite(context, slots[0], keys.key1.exp.struct);
+        slotWrite(context, slots[1], keys.key1.mod.struct);
+    }
+    stage1Log("swap", "call#" + stage1.callCount + " <- rsa_key_1");
+    stage1.sub = 6;
+    report.stage1DecLic = stage1.decLic;
+    report.stage1Complete = true;
+    stage1Log("complete", "dec_lic=" + stage1.decLic +
+        " (RSA-decrypted license buffer, Stage 2 input)");
+    const decLic = stage1.decLic;
+    setTimeout(function () {
+        try {
+            disarmGuard();
+            if (decLic !== null && decLic !== undefined) {
+                startStage2(decLic);
+            }
+        } catch (e) {
+            stage1Log("call-watch-complete-error", String(e));
+        }
+    }, 0);
+}
+
 function stage1CallCandidate(context, destination) {
     const stage1 = plan.stage1;
     if (!stage1.active || stage1.sub < 3 || stage1.sub === 6) {
         return;
     }
+    /* A hooked return address was actually reached, so this path owns Stage 1;
+     * the call watcher stands down to avoid counting the same calls twice. */
+    stage1.path = "ret";
     const slots = plan.stage1KeySlots;
     const described = [];
     let matches = 0;
@@ -1942,6 +2087,11 @@ function stage1CaptureLandmark(context) {
  */
 function stage1TakeLandmark(snapshot, label) {
     const stage1 = plan.stage1;
+    /* Arm the PIN-style call watcher: from here on, the first direct call the
+     * thread executes is the RSA call (stage1.cpp::process_ins). This is the
+     * path that works when no stack slot holds a usable return address --
+     * x86 VPIplayer hooks six candidates and reaches none of them. */
+    stage1.landmarkSeen = true;
     /* Actually clear PAGE_GUARD here, not just the bookkeeping flag. The guard
      * spans whole pages, and the OS clears the guard bit only on the page
      * that faulted -- with a 4096-byte license the guard covers two pages, so
@@ -2213,6 +2363,10 @@ rpc.exports = {
         plan.retCandidates = options.retCandidates ||
             (IS_IA32 ? [0x0, 0x4, 0x8, 0xc, 0x10, 0x14, 0x18]
                      : [0x0, 0x8, 0x10, 0x18, 0x20, 0x28]);
+        /* PIN's Stage 1 mechanism, ported: the next direct call executed after
+         * the license read is the RSA call, so no return address has to be
+         * guessed. On by default; `callWatch: false` turns it off. */
+        plan.callWatch = options.callWatch !== false;
         plan.mainModuleName = main.name;
         Process.setExceptionHandler(function (details) {
             try {
