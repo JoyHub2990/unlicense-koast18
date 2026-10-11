@@ -25,9 +25,9 @@ on:
         type: string
         default: "600"
       pin_zip:
-        description: "Intel PIN Windows kit"
+        description: "Intel PIN Windows kit (default: re-hosted in the private release; software.intel.com 403s GitHub runner IPs)"
         type: string
-        default: "https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.28-98749-g6643ecee5-msvc-windows.zip"
+        default: "gh:koast18/wl-samples:pin-kit"
 
 jobs:
   extract:
@@ -44,12 +44,28 @@ jobs:
 
       - name: Fetch Intel PIN
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.SAMPLES_TOKEN }}
         run: |
           $url = "${{ inputs.pin_zip }}"
-          Write-Host "downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile pin.zip -UseBasicParsing
-          Write-Host "pin.zip: $((Get-Item pin.zip).Length) bytes"
-          Expand-Archive pin.zip -DestinationPath .
+          $zip = $null
+          if ($url -like 'gh:*') {
+            # Re-hosted kit in the private release: software.intel.com answers
+            # 403 to GitHub runner IPs (Akamai), and to every egress this
+            # machine has except a direct HTTP/2 GET with full browser headers.
+            if (-not $env:GH_TOKEN) { throw "SAMPLES_TOKEN secret is not set" }
+            $parts = $url.Split(':')
+            gh release download $parts[2] --repo $parts[1] --dir pin-kit --clobber
+            $zip = Get-ChildItem pin-kit -Filter *.zip | Select-Object -First 1
+            if (-not $zip) { throw "no zip in the $($parts[2]) release" }
+          } else {
+            Write-Host "downloading $url"
+            Invoke-WebRequest -Uri $url -OutFile pin.zip -UseBasicParsing
+            $zip = Get-Item pin.zip
+          }
+          Write-Host "pin kit: $($zip.Name) $($zip.Length) bytes"
+          if ($zip.Length -lt 10000000) { throw "pin kit looks truncated" }
+          Expand-Archive $zip.FullName -DestinationPath .
           $dir = Get-ChildItem -Directory -Filter 'pin-*' | Select-Object -First 1
           if (-not $dir) { throw "no pin-* directory after extracting" }
           Rename-Item $dir.FullName pin
