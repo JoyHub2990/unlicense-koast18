@@ -424,6 +424,10 @@ function stage2RefreshBuffer() {
     if (!s2.active || s2.sub !== 1 || s2.decLic === null) {
         return;
     }
+    /* Called from the mp_exptmod hook's onLeave, so it runs once per RSA call;
+     * only the first couple of refreshes are worth logging. */
+    s2.refreshes = (s2.refreshes || 0) + 1;
+    const quiet = s2.refreshes > 2;
     let candidate = null;
     try {
         candidate = s2.decLic.add(IS_IA32 ? 0x0c : 0x10).readPointer();
@@ -431,11 +435,15 @@ function stage2RefreshBuffer() {
         candidate = null;
     }
     if (candidate === null || candidate.isNull()) {
-        stage2Log("rearm", "no digit pointer at " + s2.decLic);
+        if (!quiet) {
+            stage2Log("rearm", "no digit pointer at " + s2.decLic);
+        }
         return;
     }
     if (Process.findRangeByAddress(candidate) === null) {
-        stage2Log("rearm", "buf " + candidate + " not mapped");
+        if (!quiet) {
+            stage2Log("rearm", "buf " + candidate + " not mapped");
+        }
         return;
     }
     const pageSize = Process.pageSize;
@@ -449,8 +457,10 @@ function stage2RefreshBuffer() {
     }
     if (page.compare(s2.guardStart) === 0 ||
         (s2.guardStart2 !== null && page.compare(s2.guardStart2) === 0)) {
-        stage2Log("rearm", "buf=" + candidate + " hash3=" + hash3 +
-            " page already guarded (" + page + ")");
+        if (!quiet) {
+            stage2Log("rearm", "buf=" + candidate + " hash3=" + hash3 +
+                " page already guarded (" + page + ")");
+        }
         return;
     }
     s2.guardStart2 = page;
@@ -462,9 +472,11 @@ function stage2RefreshBuffer() {
     } catch (e) {
         error = String(e);
     }
-    stage2Log("rearm", "buf=" + candidate + " hash3=" + hash3 +
-        " guard2=" + page + " armed=" + armed +
-        (error === null ? "" : " arm-error=" + error));
+    if (!quiet) {
+        stage2Log("rearm", "buf=" + candidate + " hash3=" + hash3 +
+            " guard2=" + page + " armed=" + armed +
+            (error === null ? "" : " arm-error=" + error));
+    }
 }
 
 /* Same rule as Stage 1: re-arm only from the JS thread, never inside the
@@ -1607,6 +1619,19 @@ function stage1BackInRsaExptmod(context) {
                     } catch (e) {
                         stage1Log("candidate-error", String(e));
                     }
+                },
+                onLeave: function () {
+                    /* The RSA write has just landed. Refresh Stage 2's buffer
+                     * here, not on a timer: the protection reads hash_3
+                     * immediately after this call returns and then exits on the
+                     * mismatch, so the 20ms timeout added in 1a5f040 never fired
+                     * in most runs (round 21: six Stage 1 completions, two
+                     * rearms). */
+                    try {
+                        stage2RefreshBuffer();
+                    } catch (e) {
+                        /* stage2RefreshBuffer reports its own failures */
+                    }
                 }
             }));
             stage1Log("sub3-hooked-sync", destination.toString());
@@ -1621,6 +1646,13 @@ function stage1BackInRsaExptmod(context) {
                                 stage1CallCandidate(this.context, destination);
                             } catch (err) {
                                 stage1Log("candidate-error", String(err));
+                            }
+                        },
+                        onLeave: function () {
+                            try {
+                                stage2RefreshBuffer();
+                            } catch (err) {
+                                /* reported inside */
                             }
                         }
                     }));
