@@ -1530,6 +1530,7 @@ function stage1CallWatch(context, site) {
     const slots = plan.stage1KeySlots;
     const described = [];
     let matches = 0;
+    let heapMatches = 0;
     let ours = 0;
     for (let i = 0; i < slots.length; i++) {
         const value = slotRead(context, slots[i]);
@@ -1539,6 +1540,14 @@ function stage1CallWatch(context, site) {
                 JSON.stringify(shape.used)));
         if (shape !== null) {
             matches++;
+            /* mp_exptmod's operands are heap mp_ints. x86 VPIplayer matched
+             * [esp+8] holding a stack address left behind by the license read's
+             * own frame, and that false positive consumed the one identification
+             * attempt (sub4-found-mp_exptmod 0x6bed17 with arg1=null, then a
+             * single swap and no further calls). */
+            if (!stage1IsStackValue(value, context)) {
+                heapMatches++;
+            }
         }
         if (keys !== null &&
             (value.equals(keys.key1.exp.struct) ||
@@ -1550,8 +1559,11 @@ function stage1CallWatch(context, site) {
     }
     stage1Log("call-watch", "try#" + stage1.callWatchTries + " " +
         site.address + " -> " + site.dest + " matches=" + matches +
-        " ours=" + ours + " " + described.join(" | "));
-    if (matches === 0 && ours === 0) {
+        " heap=" + heapMatches + " ours=" + ours + " " +
+        described.join(" | "));
+    /* Two heap-resident mp_ints: mp_exptmod takes four arguments and its
+     * second and third are the base and the exponent. */
+    if (heapMatches < 2 && ours === 0) {
         return;
     }
 
@@ -1739,6 +1751,18 @@ function stage1CallCandidate(context, destination) {
  * hardcodes [esp+8]; on x64 the frame layout differs, so several slots are
  * collected and the first one that holds a non-system address is used (and
  * reported, so the offsets can be pinned down). */
+/* Is this value a pointer into the current stack frame's neighbourhood?
+ * mp_exptmod's operands are heap mp_ints, never stack addresses, so this
+ * separates a real argument from a stale slot the license read left behind. */
+function stage1IsStackValue(value, context) {
+    try {
+        const sp = context[SP_REG];
+        return value.compare(sp) >= 0 && value.compare(sp.add(0x40000)) < 0;
+    } catch (e) {
+        return false;
+    }
+}
+
 /* True for Windows' own DLLs. The protection's code lives either in the main
  * module's image or in memory it allocated for itself (findModuleByAddress
  * returns null for the latter); neither is a system module. Filtering on the
