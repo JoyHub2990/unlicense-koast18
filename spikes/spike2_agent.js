@@ -850,14 +850,30 @@ function install(iterator) {
                         return;
                     }
                     /* The callout is emitted for every direct call in every
-                     * non-system module, on every followed thread. Without this
-                     * the first few calls after the read are usually another
-                     * thread's unrelated work, and the five identification
-                     * attempts are spent on them (round 13: ngahost#7 tried
-                     * 0x7fff0ac64850, 0x7fff0ac65490, ... none of them RSA). */
-                    if (stage1.landmarkTid !== null &&
-                        Process.getCurrentThreadId() !== stage1.landmarkTid) {
-                        return;
+                     * non-system module, on every followed thread, so the
+                     * first calls after the read belong to whichever thread
+                     * gets there first (round 13: x64 ngahost#7 spent all
+                     * five attempts on 0x7fff0ac64850, 0x7fff0ac65490, ...,
+                     * none of them RSA). PIN does not have this problem:
+                     * process_ins is tied to the reading thread's instruction
+                     * stream.
+                     *
+                     * Filter by stack instead of by thread id.
+                     * Process.getCurrentThreadId() is not usable here: inside
+                     * the exception handler that takes the landmark it reports
+                     * the agent's own thread, not the faulting one, so
+                     * comparing it against this callout's thread filtered out
+                     * *every* call (round 14: zero call-watch lines). The RSA
+                     * call is a call from the frame that read the license, so
+                     * its stack pointer is close to the landmark's; another
+                     * thread's stack is megabytes away. */
+                    if (stage1.landmarkSp !== null) {
+                        const spNow = context[SP_REG];
+                        const spLand = stage1.landmarkSp;
+                        if (spNow.compare(spLand.add(0x20000)) > 0 ||
+                            spLand.compare(spNow.add(0x20000)) > 0) {
+                            return;
+                        }
                     }
                     if (!stage1.mpExptmod) {
                         /* Still looking for the RSA call: the fingerprint only
@@ -1569,8 +1585,10 @@ function stage1CallWatch(context, site) {
     }
     stage1Log("call-watch", "try#" + stage1.callWatchTries + " " +
         site.address + " -> " + site.dest + " matches=" + matches +
-        " heap=" + heapMatches + " ours=" + ours + " " +
-        described.join(" | "));
+        " heap=" + heapMatches + " ours=" + ours +
+        " spd=" + (stage1.landmarkSp === null
+            ? "-" : context[SP_REG].sub(stage1.landmarkSp).toString()) +
+        " " + described.join(" | "));
     /* Two heap-resident mp_ints: mp_exptmod takes four arguments and its
      * second and third are the base and the exponent. */
     if (heapMatches < 2 && ours === 0) {
@@ -2110,7 +2128,7 @@ function stage1CaptureLandmark(context) {
             break;
         }
     }
-    return { pc: pc, values: values };
+    return { pc: pc, sp: sp, values: values };
 }
 
 /* Sub-stage 1 landmark, shared by both landmark mechanisms.
@@ -2128,6 +2146,7 @@ function stage1TakeLandmark(snapshot, label) {
      * ngahost#7 has no code address in the frame at all
      * (sub1-no-code-return-candidate). */
     stage1.landmarkSeen = true;
+    stage1.landmarkSp = snapshot.sp;
     try {
         stage1.landmarkTid = Process.getCurrentThreadId();
     } catch (e) {
@@ -2263,7 +2282,7 @@ rpc.exports = {
                 mpExptmod: null, callCount: 0, decSections: 0,
                 mpInts: null, firstSwapLogged: false, lastCall: null,
                 landmarkSeen: false, landmarkTid: null, callWatchTries: 0,
-                path: null
+                landmarkSp: null, path: null
             },
             licMapped: false,
             licCopy: null,
