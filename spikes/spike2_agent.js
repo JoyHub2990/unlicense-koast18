@@ -399,9 +399,21 @@ function startStage2(decLic) {
     const pageSize = Process.pageSize;
     s2.guardStart = target.and(ptr(pageSize - 1).not());
     s2.guardLength = pageSize;
+    /* Arm *outside* the log call. stage2ArmGuard() used to be evaluated as an
+     * argument, so if it threw there was no log line at all and the failure was
+     * invisible (ngahost#1 completed Stage 1 and then produced no stage2 output
+     * whatsoever). */
+    let armed = false;
+    let error = null;
+    try {
+        armed = stage2ArmGuard();
+    } catch (e) {
+        error = String(e);
+    }
     stage2Log("start", "dec_lic=" + s2.decLic + " hash3=0x" +
         s2.hash3.toString(16) + " guard=" + s2.guardStart + "+0x" +
-        s2.guardLength.toString(16) + " armed=" + stage2ArmGuard());
+        s2.guardLength.toString(16) + " armed=" + armed +
+        (error === null ? "" : " arm-error=" + error));
 }
 
 function stage2OnGuardAccess(details) {
@@ -1360,7 +1372,11 @@ function stage1MpExptmodEnter(context) {
         /* Hand the decrypted buffer to Stage 2, which keys on the 2-byte
          * read of dec_lic + 0x33 (stage2.cpp's stage2::init). */
         if (stage1.decLic !== null && stage1.decLic !== undefined) {
-            startStage2(stage1.decLic);
+            try {
+                startStage2(stage1.decLic);
+            } catch (e) {
+                stage1Log("stage2-start-failed", String(e));
+            }
         }
     }
 }
@@ -1776,7 +1792,11 @@ function stage1CallCandidate(context, destination) {
         /* Hand the decrypted buffer to Stage 2, which keys on the 2-byte
          * read of dec_lic + 0x33 (stage2.cpp's stage2::init). */
         if (stage1.decLic !== null && stage1.decLic !== undefined) {
-            startStage2(stage1.decLic);
+            try {
+                startStage2(stage1.decLic);
+            } catch (e) {
+                stage1Log("stage2-start-failed", String(e));
+            }
         }
     }
 }
