@@ -861,31 +861,70 @@ function startStage2(decLic) {
         if (s2.sub === 1) {
             s2.sub = 2;
             stage2Log("following-now", "window opened without the guard");
-            setTimeout(stage2FollowThreads, 0);
-            /* Heartbeat. The window's own summary (cmp-not-found) only prints
-             * when the window closes, so a round that is cut short shows
-             * following-now and nothing after it -- which reads the same whether
-             * the matcher ran and found nothing or never ran at all. Round 23
-             * opened the window three times and reported no summary, leaving
-             * exactly that ambiguity. */
-            setTimeout(function () {
-                stage2Log("status", "hash3=0x" + (s2.hash3 || 0).toString(16) +
-                    " decLicBuf=" + s2.decLicBuf + " decLic=" + s2.decLic +
-                    " sub=" + s2.sub + " cmpSites=" + (s2.cmpSites || 0) +
-                    " cmpCandidates=" + (s2.cmpCandidates || 0) +
-                    " applyNoOurs=" + (s2.applyNoOurs || 0) +
-                    " memShapes=" + (s2.memShapes || 0) +
-                    " guardHits=" + (s2.hits || 0));
-            }, 3000);
-            setTimeout(function () {
-                stage2Log("status-late", "hash3=0x" + (s2.hash3 || 0).toString(16) +
-                    " sub=" + s2.sub + " cmpSites=" + (s2.cmpSites || 0) +
-                    " cmpCandidates=" + (s2.cmpCandidates || 0) +
-                    " applyNoOurs=" + (s2.applyNoOurs || 0) +
-                    " memShapes=" + (s2.memShapes || 0));
-            }, 12000);
+            /* Hardware breakpoint on the licence's hash_3 field, and no Stalker
+             * window.
+             *
+             * The window costs a JS callback per instruction: rounds 30-32
+             * processed ~4.2M instructions in ~45s, i.e. about 93k/s, which
+             * slows the target roughly a hundredfold and is why the protection
+             * never reaches its OEP. It also saturates the JS thread badly enough
+             * that whether the matcher or the timers get a slot is luck.
+             *
+             * A read breakpoint on decLicBuf + 0x33 is native: the CPU raises
+             * EXCEPTION_SINGLE_STEP when the protection reads hash_3, the handler
+             * sees the PC, and that PC is the comparison site. One trap, no
+             * per-instruction cost, and the target keeps running at full speed. */
+            stage2ArmHash3HwBreak();
+            return;
         }
     }, 0);
+}
+
+/* Read breakpoint on the licence's hash_3 field.
+ *
+ * The Stalker window that used to find the comparison site costs a JS callback
+ * per instruction -- rounds 30-32 processed ~4.2M instructions in ~45s, about
+ * 93k/s, a hundredfold slowdown -- which is why the protection never reaches its
+ * OEP, and it saturates the JS thread badly enough that whether the matcher or
+ * the timers get a slot is luck.
+ *
+ * A data breakpoint is native: the CPU traps when the protection reads hash_3 and
+ * the handler sees the PC, which is the comparison site. One trap, no
+ * per-instruction cost, and the target keeps running at full speed. */
+function stage2ArmHash3HwBreak() {
+    const s2 = stage2State();
+    if (s2.decLicBuf === null || s2.decLicBuf === undefined) {
+        stage2Log("hw3", "no decLicBuf; cannot arm");
+        return;
+    }
+    const address = s2.decLicBuf.add(HASH3_OFFSET);
+    let value = "unreadable";
+    try {
+        value = "0x" + address.readU16().toString(16);
+    } catch (e) {
+        /* leave the marker */
+    }
+    s2.hw3Address = address;
+    s2.hw3Hits = 0;
+    s2.hw3Threads = [];
+    let applied = 0;
+    let failed = 0;
+    for (const thread of Process.enumerateThreads()) {
+        let ok = false;
+        try {
+            ok = hwBreakApplyToThread(thread.id, [address, null, null], true);
+        } catch (e) {
+            ok = false;
+        }
+        if (ok) {
+            applied++;
+            s2.hw3Threads.push(thread.id);
+        } else {
+            failed++;
+        }
+    }
+    stage2Log("hw3-armed", "addr=" + address + " value=" + value +
+        " applied=" + applied + " failed=" + failed);
 }
 
 function stage2OnGuardAccess(details) {

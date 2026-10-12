@@ -105,7 +105,13 @@ function hwBreakApplyToThread(tid, addresses, enable) {
     try {
         const ctx = Memory.alloc(CONTEXT_BUF_SIZE);
         ctx.writeByteArray(new Uint8Array(CONTEXT_BUF_SIZE));
-        ctx.writeU32(layout.contextFlags);
+        /* ContextFlags is a FIELD at layout.flags (0x30 on x64), not offset 0.
+         *
+         * Writing the value at offset 0 left the real ContextFlags field zero,
+         * SetThreadContext then rejected the context and every thread counted as
+         * failed -- which is why the hardware-breakpoint landmark reported
+         * applied:0 failed:4 on every run it was tried. */
+        ctx.add(layout.flags).writeU32(layout.contextFlags);
         if (enable) {
             ctx.add(layout.dr0).writePointer(addresses[0] || ptr(0));
             ctx.add(layout.dr1).writePointer(addresses[1] || ptr(0));
@@ -175,6 +181,39 @@ function hwBreakRemove(plan) {
 /* Handler for EXCEPTION_SINGLE_STEP. Returns true when the exception was one
  * of our data breakpoints, false to let it reach the target. */
 function hwBreakOnException(plan, details) {
+    /* Stage 2's data breakpoint first, and independently of Stage 1's landmark.
+     *
+     * It is armed after Stage 1 completes and it is the only thing that knows
+     * about it, so it must not be gated on plan.hwBreakActive (Stage 1 clears
+     * that when it takes its landmark). */
+    const s2 = plan.stage2;
+    if (s2 !== undefined && s2.hw3Address !== undefined &&
+        details.type === "single-step") {
+        s2.hw3Hits = (s2.hw3Hits || 0) + 1;
+        const pc = String(details.context[plan.PC_REG]);
+        let text = "?";
+        try {
+            text = Instruction.parse(ptr(pc)).toString();
+        } catch (e) {
+            /* leave the marker */
+        }
+        plan.emit({ spike: "stage2", event: "hw3-hit", detail: "#" + s2.hw3Hits +
+            " pc=" + pc + " insn=" + text + " ours=0x" +
+            s2.hash3.toString(16) });
+        if (s2.hw3Hits >= 3) {
+            for (const tid of (s2.hw3Threads || [])) {
+                try {
+                    hwBreakApplyToThread(tid, [null, null, null], false);
+                } catch (e) {
+                    /* best effort */
+                }
+            }
+            s2.hw3Address = undefined;
+            plan.emit({ spike: "stage2", event: "hw3-removed",
+                        detail: "#" + s2.hw3Hits });
+        }
+        return true;
+    }
     if (!plan.hwBreakActive) {
         return false;
     }
