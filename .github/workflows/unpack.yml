@@ -32,7 +32,7 @@ env:
   SAMPLES_LISTS: ${{ inputs.samples_lists || 'tests/samples.list' }}
   UNLICENSE_GUARD: ${{ inputs.guard || '0' }}
   UNLICENSE_GUARD_SKIP_OEP: ${{ inputs.skip_oep || '0' }}
-  UNLICENSE_GUARD_ATTEMPTS: ${{ inputs.attempts || '3' }}
+  UNLICENSE_GUARD_ATTEMPTS: ${{ inputs.attempts || '8' }}
 
 jobs:
   unpack:
