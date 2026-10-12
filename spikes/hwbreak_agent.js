@@ -70,14 +70,30 @@ function hwBreakExport(name) {
         try {
             const address = Module.getExportByName(moduleName, name);
             if (address !== null && address !== undefined) {
+                hwBreakExport.resolved[name] = moduleName + ":" + address;
                 return address;
             }
         } catch (e) {
             /* not exported here; try the next module */
         }
     }
+    /* Last resort: search every loaded module. */
+    try {
+        const anywhere = Module.findExportByName(null, name);
+        if (anywhere !== null && anywhere !== undefined) {
+            hwBreakExport.resolved[name] = "any:" + anywhere;
+            return anywhere;
+        }
+    } catch (e) {
+        /* give up */
+    }
+    /* A null here becomes a NativeFunction that is not callable, and the failure
+     * then surfaces as "TypeError: not a function" at the call site -- which
+     * names the wrong thing entirely. Record the lookup itself. */
+    hwBreakExport.resolved[name] = "NOT FOUND";
     return null;
 }
+hwBreakExport.resolved = {};
 
 function hwBreakApis() {
     if (hwBreakApis.cache !== undefined) {
@@ -222,6 +238,7 @@ function hwBreakInstall(plan, addresses) {
                 addresses: targets.map(String),
                 applied: applied, failed: failed,
                 reasons: reasons,
+                resolved: hwBreakExport.resolved,
                 dr7: "0x" + DR7_THREE_RW_BYTE.toString(16) });
     return plan.hwBreakActive;
 }

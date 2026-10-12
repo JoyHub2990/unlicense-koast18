@@ -1723,22 +1723,19 @@ function installWindowsHooks() {
                          * same code path by hand to avoid re-entrancy. */
                         plan.tracing = true;
                         followStart = Date.now();
-                        /* Trace the main thread only.
+                        /* Follow every thread again.
                          *
-                         * Stalker with a JS transform runs a JS callback per
-                         * instruction, and this loop followed every thread in the
-                         * process (threads=5). Rounds 30 and 31 ran identical
-                         * code and differed only in whether the JS thread could
-                         * still service timers: round 30 produced cmp-site 49 and
-                         * the +5.5s status line, round 31 produced 200 scan-ticks
-                         * and not one timer callback. Per-instruction callouts
-                         * across five threads saturate the JS thread; the licence
-                         * check runs on the thread that maps the licence. */
-                        const candidates = plan.mainThread === undefined
-                            ? Process.enumerateThreads()
-                            : Process.enumerateThreads().filter(function (t) {
-                                return t.id === plan.mainThread;
-                            });
+                         * Restricting this to the licence-mapping thread was a
+                         * Stage 2 measure: the Stalker window costs a JS callback
+                         * per instruction and saturated the JS thread. Stage 2 no
+                         * longer uses a window (it uses a data breakpoint on the
+                         * hash_3 field), so that cost is gone -- and Stage 1's
+                         * mechanism *is* the transform: sub4-found-mp_exptmod and
+                         * the licence-page reads both come from it. Cutting this
+                         * to one thread is why tracing_started_at_map went from
+                         * threads=4/5 to threads=1 and why rounds 33-37 produced
+                         * guard-hit 0-3 and no Stage 1 completion at all. */
+                        const candidates = Process.enumerateThreads();
                         for (const thread of candidates) {
                             try {
                                 Stalker.follow(thread.id,
@@ -1912,22 +1909,19 @@ function installLinuxHooks() {
                          * same code path by hand to avoid re-entrancy. */
                         plan.tracing = true;
                         followStart = Date.now();
-                        /* Trace the main thread only.
+                        /* Follow every thread again.
                          *
-                         * Stalker with a JS transform runs a JS callback per
-                         * instruction, and this loop followed every thread in the
-                         * process (threads=5). Rounds 30 and 31 ran identical
-                         * code and differed only in whether the JS thread could
-                         * still service timers: round 30 produced cmp-site 49 and
-                         * the +5.5s status line, round 31 produced 200 scan-ticks
-                         * and not one timer callback. Per-instruction callouts
-                         * across five threads saturate the JS thread; the licence
-                         * check runs on the thread that maps the licence. */
-                        const candidates = plan.mainThread === undefined
-                            ? Process.enumerateThreads()
-                            : Process.enumerateThreads().filter(function (t) {
-                                return t.id === plan.mainThread;
-                            });
+                         * Restricting this to the licence-mapping thread was a
+                         * Stage 2 measure: the Stalker window costs a JS callback
+                         * per instruction and saturated the JS thread. Stage 2 no
+                         * longer uses a window (it uses a data breakpoint on the
+                         * hash_3 field), so that cost is gone -- and Stage 1's
+                         * mechanism *is* the transform: sub4-found-mp_exptmod and
+                         * the licence-page reads both come from it. Cutting this
+                         * to one thread is why tracing_started_at_map went from
+                         * threads=4/5 to threads=1 and why rounds 33-37 produced
+                         * guard-hit 0-3 and no Stage 1 completion at all. */
+                        const candidates = Process.enumerateThreads();
                         for (const thread of candidates) {
                             try {
                                 Stalker.follow(thread.id,
