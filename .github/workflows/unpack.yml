@@ -11,14 +11,10 @@ on:
         description: "1 = neutralize the licence check inside the unpacking session (UNLICENSE_GUARD=1)"
         type: string
         default: "0"
-  push:
-    branches: [main, dev]
-    paths:
-      - "unlicense/**"
-      - "scripts/**"
-      - "pyproject.toml"
-      # NOT tests/**: editing a sample manifest must not launch the 19-sample
-      # unpack run (up to 90 minutes of windows runner). Dispatch it instead.
+  # Dispatch only. This workflow runs the whole sample manifest (up to 90
+  # minutes of windows runner per leg) and holds the concurrency group, so a push
+  # to unlicense/** used to queue a full run behind every small commit and block
+  # a dispatched run that was actually wanted. spikes/check.yml cover pushes.
 
 concurrency:
   group: unpack-${{ github.ref }}
