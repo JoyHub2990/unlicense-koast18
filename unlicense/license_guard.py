@@ -251,6 +251,48 @@ def combined_source() -> str:
     return "\n".join([guard, frida, _MERGE_TAIL])
 
 
+# The exports unlicense's ProcessController calls before and during a run.  They
+# normally come from frida.js; the guard-only diagnostic script has no frida.js,
+# and without them the run dies in a second with
+# "unable to find method 'getArchitecture'" and the isolation experiment never
+# happens. Same names and shapes as frida.js's own exports.
+_CONTROLLER_SHIMS = """
+/* The controller's exports, in place of frida.js's.
+ *
+ * Only these are needed: unlicense reads the architecture, pointer and page
+ * sizes before the run, and application.py polls enumerateModules while waiting
+ * for the OEP. The OEP-tracing-specific exports (setupOepTracing, ...) are
+ * deliberately absent -- this script is the "guard without the tracer" arm of
+ * the experiment, and spawn_and_instrument does not call them under that switch.
+ */
+rpc.exports.getArchitecture = function () { return Process.arch; };
+rpc.exports.getPointerSize = function () { return Process.pointerSize; };
+rpc.exports.getPageSize = function () { return Process.pageSize; };
+rpc.exports.findModuleByAddress = function (address) {
+    return Process.findModuleByAddress(ptr(address));
+};
+rpc.exports.findRangeByAddress = function (address) {
+    return Process.findRangeByAddress(ptr(address));
+};
+rpc.exports.findExportByName = function (moduleName, exportName) {
+    const mod = Process.findModuleByName(moduleName);
+    return mod == null ? null : mod.findExportByName(exportName);
+};
+rpc.exports.enumerateModules = function () {
+    return Process.enumerateModules().map(function (module) {
+        return module.name;
+    });
+};
+rpc.exports.enumerateModuleRanges = function (moduleName) {
+    return Process.enumerateRangesSync("r--").filter(function (range) {
+        const module = Process.findModuleByAddress(range.base);
+        return module != null &&
+            module.name.toUpperCase() === moduleName.toUpperCase();
+    });
+};
+"""
+
+
 def guard_only_source() -> str:
     """The guard modules and the merge tail, without frida.js.
 
@@ -258,14 +300,14 @@ def guard_only_source() -> str:
     code is still in the script and still runs its top-level hooks. To attribute a
     stall to it, load a script that does not contain it at all. The tail's
     __fridaExceptionHandler stays undefined, which the combined handler already
-    tolerates.
+    tolerates, and _CONTROLLER_SHIMS replaces the exports the controller needs.
     """
     guard = "\n".join(_read_module(name) for name in _GUARD_MODULES)
     if _GUARD_HANDLER_CALL not in guard or _GUARD_EXPORTS not in guard:
         raise ValueError("guard agent: handler call or rpc.exports not found")
     guard = guard.replace(_GUARD_HANDLER_CALL, _GUARD_HANDLER_WRAP, 1)
     guard = guard.replace(_GUARD_EXPORTS, "const __guardRpc = {", 1)
-    return "\n".join([guard, _MERGE_TAIL])
+    return "\n".join([guard, _MERGE_TAIL, _CONTROLLER_SHIMS])
 
 
 def message_handler(
