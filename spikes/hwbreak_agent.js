@@ -113,6 +113,13 @@ function hwBreakApis() {
             "int", ["pointer", "pointer"]),
         SetThreadContext: new NativeFunction(hwBreakExport("SetThreadContext"),
             "int", ["pointer", "pointer"]),
+        /* SetThreadContext resolves to something that is not callable in this
+         * process (round 37/38: "TypeError: not a function" at the call site,
+         * while OpenThread from the same helper is fine). NtSetContextThread is
+         * the ntdll function it forwards to; NTSTATUS 0 means success. */
+        NtSetContextThread: new NativeFunction(
+            hwBreakExport("NtSetContextThread"), "int32",
+            ["pointer", "pointer"]),
         GetLastError: new NativeFunction(hwBreakExport("GetLastError"),
             "uint32", [])
     };
@@ -170,11 +177,19 @@ function hwBreakApplyToThread(tid, addresses, enable) {
                 ctx.add(layout.dr7).writePointer(ptr(DR7_THREE_RW_BYTE));
             }
             step = "SetThreadContext";
-            ok = api.SetThreadContext(handle, ctx).toInt32() !== 0;
+            let wrote = false;
+            try {
+                wrote = api.SetThreadContext(handle, ctx).toInt32() !== 0;
+            } catch (e) {
+                /* Not callable here; fall through to the ntdll entry point. */
+                step = "NtSetContextThread";
+                wrote = api.NtSetContextThread(handle, ctx).toInt32() >= 0;
+            }
+            ok = wrote;
             if (!ok) {
                 step = "GetLastError";
                 hwBreakApplyToThread.lastError =
-                    "tid=" + tid + " SetThreadContext err=" + api.GetLastError();
+                    "tid=" + tid + " write-context err=" + api.GetLastError();
             }
         } finally {
             /* Closing is best effort, and must never mask a successful install.
@@ -233,12 +248,21 @@ function hwBreakInstall(plan, addresses) {
             }
         }
     }
+    const resolvedShort = Object.keys(hwBreakExport.resolved)
+        .map(function (name) {
+            const value = String(hwBreakExport.resolved[name])
+                .replace("kernel32.dll", "k32")
+                .replace("KernelBase.dll", "kb")
+                .replace("ntdll.dll", "nt");
+            return name + "=" + value;
+        })
+        .join(" ");
     plan.hwBreakActive = applied > 0;
     plan.emit({ spike: "hwbreak", event: "installed",
                 addresses: targets.map(String),
                 applied: applied, failed: failed,
-                reasons: reasons,
-                resolved: hwBreakExport.resolved,
+                reasons: reasons.slice(0, 2),
+                resolved: resolvedShort,
                 dr7: "0x" + DR7_THREE_RW_BYTE.toString(16) });
     return plan.hwBreakActive;
 }
