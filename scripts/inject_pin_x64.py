@@ -62,6 +62,14 @@ def to_x64(block: str, arch: dict) -> str:
     out = out.replace("extras\\xed-ia32", "extras\\xed-intel64")
     out = out.replace("TARGET_IA32;HOST_IA32", "TARGET_IA32E;HOST_IA32E")
     out = out.replace("__i386__", "__LP64__")
+    # The Win32 Link block pins the x86 target and an stdcall-decorated entry
+    # point; carried into x64 they make the linker reject PIN's x64 crtbeginS.obj
+    # with LNK1112 ("module machine type 'x64' conflicts with target machine type
+    # 'x86'"). On x64 __stdcall is ignored, so the @12 decoration goes away.
+    out = out.replace("<TargetMachine>MachineX86</TargetMachine>",
+                      "<TargetMachine>MachineX64</TargetMachine>")
+    out = out.replace("Ptrace_DllMainCRTStartup%4012",
+                      "Ptrace_DllMainCRTStartup")
     # The project's x64 blocks name these literally; the auto-detected names (when
     # the PIN root is passed) override them if the kit spells them differently.
     out = out.replace("crt\\include\\arch-x86;", "crt\\include\\arch-x86_64;")
