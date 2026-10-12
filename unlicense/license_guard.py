@@ -81,46 +81,59 @@ _MERGE_TAIL = """
  * guarded ranges.
  *
  * The two handler call sites above were rewritten to hand their functions to
- * these shims, so neither half installs a handler itself.  Function declarations
- * hoist, so they are defined by the time either half calls one.
+ * these shims, so neither half installs a handler itself.  Each shim reinstalls
+ * the combined handler after capturing, which makes the order irrelevant: it
+ * runs once when frida.js registers (the guard's callback is not there yet, so
+ * every fault falls through to the OEP handler) and again when the guard's
+ * setup() registers.  Installing the handler from the shims rather than through
+ * an extra RPC keeps Frida's export-name resolution out of the critical path --
+ * a call to install_exception_handler failed with
+ * "unable to find method 'installExceptionHandler'", which is a name-resolution
+ * problem, not a missing callback.
  *
  * The callbacks must be declared: the agent starts with 'use strict', so
  * assigning to an undeclared name throws ReferenceError and setup() fails with
  * '__guardExceptionHandler' is not defined.  `let` at the top level is evaluated
- * when this tail runs, i.e. at load time, well before setup() is called.
+ * when this tail runs, i.e. at load time, well before either shim is called.
  */
 let __guardExceptionHandler;
 let __fridaExceptionHandler;
 
+function __installCombinedHandler() {
+    Process.setExceptionHandler(function (details) {
+        try {
+            if (__guardExceptionHandler !== undefined &&
+                __guardExceptionHandler(details)) {
+                return true;
+            }
+        } catch (e) {
+            /* fall through to the OEP handler rather than losing the exception
+             * entirely */
+        }
+        try {
+            return __fridaExceptionHandler !== undefined
+                ? __fridaExceptionHandler(details) : false;
+        } catch (e) {
+            return false;
+        }
+    });
+}
+
 function __captureGuardHandler(callback) {
     __guardExceptionHandler = callback;
+    __installCombinedHandler();
 }
 
 function __captureFridaHandler(callback) {
     __fridaExceptionHandler = callback;
+    __installCombinedHandler();
 }
 
 (function () {
     const __fridaExports = rpc.exports || {};
     rpc.exports = Object.assign({}, __fridaExports, __guardRpc, {
         install_exception_handler: function () {
-            Process.setExceptionHandler(function (details) {
-                try {
-                    if (__guardExceptionHandler !== undefined &&
-                        __guardExceptionHandler(details)) {
-                        return true;
-                    }
-                } catch (e) {
-                    /* fall through to the OEP handler rather than losing the
-                     * exception entirely */
-                }
-                try {
-                    return __fridaExceptionHandler !== undefined
-                        ? __fridaExceptionHandler(details) : false;
-                } catch (e) {
-                    return false;
-                }
-            });
+            __installCombinedHandler();
             return true;
         }
     });
@@ -369,14 +382,12 @@ def arm(script: frida.core.Script, pe_path: Path) -> bool:
             }),
             60.0,
             "guard setup")
-        # Only now: setup() is what assigns the guard's callback, and the combined
-        # handler has to be installed after both halves exist.
-        _rpc_with_timeout(
-            lambda: script.exports_sync.install_exception_handler(), 30.0,
-            "install_exception_handler")
     except Exception as exc:  # noqa: BLE001
         _say(f"guard setup failed ({exc}); continuing without it")
         return False
+    # No separate install call: the capture shims reinstall the combined handler
+    # themselves, so setup() is enough and Frida's export-name resolution stays
+    # out of the path.
     _say("armed (one script, one exception handler)")
     return True
 
