@@ -202,8 +202,9 @@ def spawn_and_instrument(
     if os.environ.get("UNLICENSE_GUARD_SKIP_OEP") == "1":
         LOG.info("UNLICENSE_GUARD_SKIP_OEP=1: not arming the OEP tracer")
     else:
-        frida_rpc.setup_oep_tracing(pe_path.name, [[r.base, r.size]
-                                                   for r in text_section_ranges])
+        frida_rpc.setup_oep_tracing(pe_path.name,
+                                    [[r.base, r.size]
+                                     for r in text_section_ranges])
     # Point the guard at the licence and start it, still before resuming.
     #
     # The OEP is only reachable if the licence is accepted: on a real protected
