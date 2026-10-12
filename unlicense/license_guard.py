@@ -86,7 +86,20 @@ def guard_enabled() -> bool:
 
 
 def _agent_source() -> str:
-    """Read the guard agent, from the package resources if present."""
+    """Read the guard agent.
+
+    The package is installed into site-packages, so ``Path(__file__).parent``
+    there has no ``spikes/`` next to it: the first guarded CI run died with
+    FileNotFoundError for exactly that reason.  Honour an explicit path first --
+    run_unpack.py passes the checkout's copy -- then the package resource, then
+    the checkout.
+    """
+    override = os.environ.get("UNLICENSE_GUARD_AGENT")
+    if override:
+        path = Path(override)
+        if path.is_file():
+            return path.read_text()
+        raise FileNotFoundError(f"UNLICENSE_GUARD_AGENT={override} is not a file")
     try:
         from importlib import resources
         return resources.open_text("unlicense.resources", _AGENT_NAME).read()
@@ -96,8 +109,8 @@ def _agent_source() -> str:
     path = Path(__file__).resolve().parent.parent / "spikes" / _AGENT_NAME
     if not path.is_file():
         raise FileNotFoundError(
-            f"guard agent not found: tried package resource {_AGENT_NAME!r} "
-            f"and {path}")
+            f"guard agent not found: tried package resource {_AGENT_NAME!r}, "
+            f"{path}, and UNLICENSE_GUARD_AGENT is unset")
     return path.read_text()
 
 
@@ -203,12 +216,10 @@ def install(session: frida.core.Session, pe_path: Path) -> Optional[Any]:
         _say(f"cannot read {licence}: {exc}")
         return None
     rsa_keys = find_rsa_keys(pe_path)
-    if rsa_keys is None:
-        # Without our keys Stage 1 has nothing to swap in, and the protection
-        # keeps its own -- which will reject our licence.  Say so rather than
-        # producing an rc=4 that looks like a timeout.
-        _say("no RSA keys (UNLICENSE_GUARD_RSA or a sibling regkey.rsa); "
-             "Stage 1 cannot replace the embedded keys")
+    # No keys is not an error while identityKey is on: the agent then builds its
+    # own (exponent 1), which is what makes the decrypt the identity. The CI
+    # spike2 runs show exactly that (keys-materialised ... identityKey=true with
+    # no regkey.rsa present), so warning about it here only misleads.
     source = _agent_source()
     _say(f"loading agent ({len(source)} bytes)")
 

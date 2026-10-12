@@ -73,9 +73,16 @@ def run_one(pe_rel: str) -> dict:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+            # The package is installed into site-packages, where there is no
+            # spikes/ next to it, so point the guard at the checkout's agent.
+            child_env = dict(os.environ)
+            agent = ROOT / "spikes" / "spike2_agent.js"
+            if agent.is_file():
+                child_env["UNLICENSE_GUARD_AGENT"] = str(agent)
             proc = subprocess.Popen(cmd, cwd=workdir, stdout=log,
                                     stderr=subprocess.STDOUT, text=True,
-                                    errors="replace", bufsize=1)
+                                    errors="replace", bufsize=1,
+                                    env=child_env)
             try:
                 proc.wait(timeout=PER_SAMPLE_TIMEOUT)
             except subprocess.TimeoutExpired:
