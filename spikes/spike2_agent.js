@@ -1807,7 +1807,13 @@ function installWindowsHooks() {
                          * to one thread is why tracing_started_at_map went from
                          * threads=4/5 to threads=1 and why rounds 33-37 produced
                          * guard-hit 0-3 and no Stage 1 completion at all. */
-                        const candidates = Process.enumerateThreads();
+                        const candidates = plan.noTrace
+                            ? []
+                            : Process.enumerateThreads();
+                        if (plan.noTrace) {
+                            emit({ spike: "tracing_started_at_map",
+                                   threads: 0, skipped: "noTrace" });
+                        }
                         for (const thread of candidates) {
                             try {
                                 Stalker.follow(thread.id,
@@ -1993,7 +1999,13 @@ function installLinuxHooks() {
                          * to one thread is why tracing_started_at_map went from
                          * threads=4/5 to threads=1 and why rounds 33-37 produced
                          * guard-hit 0-3 and no Stage 1 completion at all. */
-                        const candidates = Process.enumerateThreads();
+                        const candidates = plan.noTrace
+                            ? []
+                            : Process.enumerateThreads();
+                        if (plan.noTrace) {
+                            emit({ spike: "tracing_started_at_map",
+                                   threads: 0, skipped: "noTrace" });
+                        }
                         for (const thread of candidates) {
                             try {
                                 Stalker.follow(thread.id,
@@ -3371,6 +3383,16 @@ rpc.exports = {
         stage2State();
         if (options.deferTracing) {
             plan.deferTracing = true;
+        }
+        /* Diagnostic: no map-time transform at all.
+         *
+         * Rounds 27-32 saw the protection read the licence page 30-50 times per
+         * run; from round 33 on it read it zero times while the target stayed
+         * alive to the OEP timeout. A per-instruction transform slows the target
+         * a hundredfold, which is what an anti-tamper timing check reacts to.
+         * This flag separates that from a change in our own code. */
+        if (options.noTrace) {
+            plan.noTrace = true;
         }
 
         if (IS_WINDOWS) {

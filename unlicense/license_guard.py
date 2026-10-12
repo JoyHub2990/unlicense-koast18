@@ -459,6 +459,17 @@ def arm(script: frida.core.Script, pe_path: Path) -> bool:
                 # decrypted buffer is the licence blob itself instead of a lottery.
                 "identityKey": True,
                 "guardSpan": 0x4000,
+                # Diagnostic: skip the map-time Stalker transform entirely.
+                #
+                # Rounds 27-32 saw the protection read the licence page 30-50
+                # times per run; from round 33 on it read it zero times, and the
+                # target stayed alive to the OEP timeout without ever verifying.
+                # A hundredfold slowdown (the transform runs a JS callback per
+                # instruction) is exactly the kind of thing a protected binary's
+                # anti-tamper timing check reacts to, and it would explain both
+                # the missing reads and the missing OEP. Turning the transform off
+                # separates that from a change in our own code.
+                "noTrace": os.environ.get("UNLICENSE_GUARD_NO_TRACE") == "1",
             }),
             60.0,
             "guard setup")

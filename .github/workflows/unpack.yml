@@ -18,7 +18,11 @@ on:
       attempts:
         description: "Attempts per sample when the guard is on (each is a full run)"
         type: string
-        default: "3"
+        default: "8"
+      no_trace:
+        description: "1 = diagnostic: do not attach the map-time Stalker transform (tests whether its hundredfold slowdown is what the protection reacts to)"
+        type: string
+        default: "0"
   # Dispatch only. This workflow runs the whole sample manifest (up to 90
   # minutes of windows runner per leg) and holds the concurrency group, so a push
   # to unlicense/** used to queue a full run behind every small commit and block
@@ -33,6 +37,7 @@ env:
   UNLICENSE_GUARD: ${{ inputs.guard || '0' }}
   UNLICENSE_GUARD_SKIP_OEP: ${{ inputs.skip_oep || '0' }}
   UNLICENSE_GUARD_ATTEMPTS: ${{ inputs.attempts || '8' }}
+  UNLICENSE_GUARD_NO_TRACE: ${{ inputs.no_trace || '0' }}
 
 jobs:
   unpack:
