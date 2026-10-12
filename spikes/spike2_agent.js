@@ -685,7 +685,16 @@ function stage2LocateBufferByContent() {
     let scanned = 0;
     let ranges = [];
     try {
-        ranges = Process.enumerateRanges("r--");
+        /* Writable ranges only.
+         *
+         * The decrypted licence lives in a read-write buffer; the encrypted
+         * lic_copy and the licence file the protection mapped are read-only. With
+         * the identity key both hold the same bytes, so searching read-only
+         * ranges finds the mapped file every time and never the buffer we want:
+         * round 28 re-pointed decLicBuf at 0x53e7c0 (read-only) while stage2
+         * start had resolved the real buffer as 0x6ae800, hash_3 read 0 at the
+         * new address, and all 2413 comparison sites were refused. */
+        ranges = Process.enumerateRanges("rw-");
     } catch (e) {
         stage2Log("buf-scan", "enumerateRanges failed: " + e);
         return;
@@ -716,7 +725,17 @@ function stage2LocateBufferByContent() {
     if (hits.length === 0) {
         return;
     }
+    /* Belt and braces: never re-point decLicBuf at a read-only range. */
+    const owner = Process.findRangeByAddress(hits[0]);
+    if (owner === null || owner.protection.indexOf("w") < 0) {
+        stage2Log("buf-scan", "hit " + hits[0] + " is not writable (" +
+            (owner === null ? "no range" : owner.protection) + "); keeping " +
+            s2.decLicBuf);
+        return;
+    }
     const range = stage2GuardRange(hits[0].add(HASH3_OFFSET));
+    stage2Log("buf-scan-adopt", "buf " + s2.decLicBuf + " -> " + hits[0] +
+        " protection=" + owner.protection);
     s2.decLicBuf = hits[0];
     if (range.start.compare(s2.guardStart) === 0 ||
         (s2.guardStart2 !== null && range.start.compare(s2.guardStart2) === 0)) {
@@ -1212,9 +1231,16 @@ function stage2ApplyCmp(context, site) {
      * harmless in the real flow, where the decrypted buffer is already
      * complete and stable. */
     try {
-        s2.hash3 = s2.decLicBuf !== null
+        /* Never let a zero overwrite a known reference value. Reading the field
+         * is a refresh, not a reset: when decLicBuf points somewhere the licence
+         * does not live (round 28 re-pointed it at the read-only mapped file),
+         * the read yields 0 and every site is refused for the wrong reason. */
+        const fresh = s2.decLicBuf !== null
             ? s2.decLicBuf.add(HASH3_OFFSET).readU16()
             : s2.decLic.add(HASH3_OFFSET).readU16();
+        if (fresh !== 0 || s2.hash3 === 0) {
+            s2.hash3 = fresh;
+        }
     } catch (e) {
         /* keep the previous value */
     }
