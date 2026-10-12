@@ -19,7 +19,15 @@ on:
       target:
         description: "Executable inside the samples-vpi release to run"
         type: string
-        default: "VPIplayer.exe"
+        default: "NgaHost.exe"
+      platform:
+        description: "wl-extract platform (x64 to instrument the WinLicense v3 x64 samples, x86 for the Themida one)"
+        type: string
+        default: "x64"
+      rebuild_license:
+        description: "1 = after the run, rebuild regkey.dat with wl-lic -m <extracted main_hash>"
+        type: string
+        default: "1"
       timeout_s:
         description: "Seconds to let PIN run before killing it"
         type: string
@@ -30,7 +38,7 @@ on:
         default: "gh:koast18/wl-samples:pin-kit"
 
 concurrency:
-  group: pin-${{ github.ref }}-${{ inputs.target }}
+  group: pin-${{ github.ref }}-${{ inputs.target }}-${{ inputs.platform }}
   cancel-in-progress: true
 
 jobs:
@@ -90,7 +98,7 @@ jobs:
             Write-Host "retargeted $($_.Name) to v143"
           }
 
-      - name: Build wl-lic and wl-extract (x86)
+      - name: Build wl-lic and wl-extract (${{ inputs.platform }})
         shell: pwsh
         run: |
           $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
@@ -98,10 +106,13 @@ jobs:
             -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
           if (-not $msbuild) { throw "MSBuild not found" }
           Write-Host "msbuild: $msbuild"
+          $plat = "${{ inputs.platform }}"
           Push-Location pin\source\tools\whatlicense
           & $msbuild wl-lic.vcxproj /p:Configuration=Release /p:Platform=Win32 /m /v:minimal
           if ($LASTEXITCODE -ne 0) { Write-Host "wl-lic build rc=$LASTEXITCODE" }
-          & $msbuild wl-extract.vcxproj "/p:Configuration=Pin 3.27+" /p:Platform=Win32 /m /v:minimal
+          # wl-extract has Release|x64 as well as Release|Win32, so the same
+          # project instruments a 64-bit target when built for x64.
+          & $msbuild wl-extract.vcxproj "/p:Configuration=Pin 3.27+" "/p:Platform=$plat" /m /v:minimal
           if ($LASTEXITCODE -ne 0) { Write-Host "wl-extract build rc=$LASTEXITCODE" }
           Pop-Location
           Get-ChildItem pin\source\tools\whatlicense -Recurse -Include wl-lic.exe,wl-extract.dll |
@@ -133,7 +144,15 @@ jobs:
           $root = (Get-Location).Path
           $bin = Split-Path (Get-ChildItem pin\source\tools\whatlicense -Recurse -Filter wl-lic.exe | Select-Object -First 1).FullName
           $ext = (Get-ChildItem pin\source\tools\whatlicense -Recurse -Filter wl-extract.dll | Select-Object -First 1).FullName
-          $pin = Join-Path $root 'pin\pin.exe'
+          # The kit ships one pin.exe per host architecture: the root one is the
+          # 32-bit host, intel64\bin the 64-bit host.
+          $pin = if ("${{ inputs.platform }}" -eq "x64") {
+            Join-Path $root 'pin\intel64\bin\pin.exe'
+          } else {
+            Join-Path $root 'pin\pin.exe'
+          }
+          if (-not (Test-Path $pin)) { throw "no PIN binary at $pin" }
+          Write-Host "pin: $pin"
           Push-Location samples
           & "$bin\wl-lic.exe" -d regkey.dat -r regkey.rsa
           Write-Host "wl-lic rc=$LASTEXITCODE"
@@ -159,6 +178,39 @@ jobs:
           } else {
             Write-Host "no log file produced"
           }
+
+      - name: Rebuild the dummy license with the extracted main_hash
+        if: always() && inputs.rebuild_license == '1'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path wl_log.txt)) { Write-Host "no wl_log.txt"; exit 0 }
+          $line = Select-String -Path wl_log.txt -Pattern 'main_hash \(not unique\):' |
+            Select-Object -First 1
+          if (-not $line) {
+            Write-Host "no main_hash in the log -- wl-extract did not reach Stage 5"
+            exit 0
+          }
+          $hash = ($line.Line -split ':', 2)[1].Trim()
+          Write-Host "main_hash: $hash  (len $($hash.Length))"
+
+          # The dummy wl-lic builds by default uses randomized main_hash keys
+          # (crypt.cpp: main_hash_key::randomize), so its hash_3 can never equal
+          # what the protection computes from its own main_hash. Stage 5's whole
+          # point is to hand back a main_hash that IS the protection's, and
+          # stage5.cpp says the resulting key file is "valid except for RSA
+          # encryption" -- which is exactly what Stage 1's identity key bypasses.
+          $lic = Get-ChildItem pin\source\tools\whatlicense -Recurse -Filter wl-lic.exe |
+            Select-Object -First 1
+          Push-Location samples
+          & $lic.FullName -m $hash -d regkey.dat -r regkey.rsa
+          Write-Host "wl-lic -m rc=$LASTEXITCODE"
+          Get-ChildItem regkey.* | ForEach-Object { Write-Host "$($_.Name) $($_.Length)" }
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path regkey.dat))
+          $head = ($bytes[0..7] | ForEach-Object { $_.ToString('x2') }) -join ''
+          # hash_3 is the 16-bit field at offset 0x33 of the license head.
+          $h3 = [BitConverter]::ToUInt16($bytes, 0x33)
+          Write-Host "dummy head=$head size=$($bytes.Length) hash_3=0x$($h3.ToString('x4'))"
+          Pop-Location
 
       - name: Summarise the extraction log
         if: always()
