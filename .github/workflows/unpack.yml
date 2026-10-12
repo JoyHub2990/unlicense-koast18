@@ -11,6 +11,14 @@ on:
         description: "1 = neutralize the licence check inside the unpacking session (UNLICENSE_GUARD=1)"
         type: string
         default: "0"
+      skip_oep:
+        description: "1 = diagnostic: do not arm the OEP tracer, to attribute a stall to it"
+        type: string
+        default: "0"
+      attempts:
+        description: "Attempts per sample when the guard is on (each is a full run)"
+        type: string
+        default: "3"
   # Dispatch only. This workflow runs the whole sample manifest (up to 90
   # minutes of windows runner per leg) and holds the concurrency group, so a push
   # to unlicense/** used to queue a full run behind every small commit and block
@@ -23,6 +31,8 @@ concurrency:
 env:
   SAMPLES_LISTS: ${{ inputs.samples_lists || 'tests/samples.list' }}
   UNLICENSE_GUARD: ${{ inputs.guard || '0' }}
+  UNLICENSE_GUARD_SKIP_OEP: ${{ inputs.skip_oep || '0' }}
+  UNLICENSE_GUARD_ATTEMPTS: ${{ inputs.attempts || '3' }}
 
 jobs:
   unpack:

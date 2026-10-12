@@ -1,5 +1,6 @@
 import functools
 import logging
+import os
 from importlib import resources
 from pathlib import Path
 from typing import (List, Callable, Dict, Any, Optional)
@@ -192,8 +193,17 @@ def spawn_and_instrument(
     frida_rpc = script.exports
     process_controller = FridaProcessController(pid, main_module_name, session,
                                                 script)
-    frida_rpc.setup_oep_tracing(pe_path.name, [[r.base, r.size]
-                                               for r in text_section_ranges])
+    # Diagnostic switch: with the guard on, is the OEP tracer what stalls the
+    # protection? frida.js puts PAGE_GUARD on the text section it expects the OEP
+    # to run in, and the protection's own unpacking runs there, so every
+    # instruction page faults. Round 15 showed the protection maps the licence at
+    # +0.0s and then touches nothing for 151s, which is a stall rather than
+    # slowness. Skipping the tracer separates the two halves.
+    if os.environ.get("UNLICENSE_GUARD_SKIP_OEP") == "1":
+        LOG.info("UNLICENSE_GUARD_SKIP_OEP=1: not arming the OEP tracer")
+    else:
+        frida_rpc.setup_oep_tracing(pe_path.name, [[r.base, r.size]
+                                                   for r in text_section_ranges])
     # Point the guard at the licence and start it, still before resuming.
     #
     # The OEP is only reachable if the licence is accepted: on a real protected
