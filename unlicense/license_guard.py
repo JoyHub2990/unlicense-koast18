@@ -251,6 +251,23 @@ def combined_source() -> str:
     return "\n".join([guard, frida, _MERGE_TAIL])
 
 
+def guard_only_source() -> str:
+    """The guard modules and the merge tail, without frida.js.
+
+    UNLICENSE_GUARD_SKIP_OEP only skips the setup_oep_tracing *call*; frida.js's
+    code is still in the script and still runs its top-level hooks. To attribute a
+    stall to it, load a script that does not contain it at all. The tail's
+    __fridaExceptionHandler stays undefined, which the combined handler already
+    tolerates.
+    """
+    guard = "\n".join(_read_module(name) for name in _GUARD_MODULES)
+    if _GUARD_HANDLER_CALL not in guard or _GUARD_EXPORTS not in guard:
+        raise ValueError("guard agent: handler call or rpc.exports not found")
+    guard = guard.replace(_GUARD_HANDLER_CALL, _GUARD_HANDLER_WRAP, 1)
+    guard = guard.replace(_GUARD_EXPORTS, "const __guardRpc = {", 1)
+    return "\n".join([guard, _MERGE_TAIL])
+
+
 def message_handler(
     on_oep_reached: Callable[[Dict[str, Any]], None]
 ) -> Callable[[Dict[str, Any], Any], None]:

@@ -173,7 +173,13 @@ def spawn_and_instrument(
     main_module_name = pe_path.name
     session = frida.attach(pid)
     guard = license_guard.guard_enabled()
-    if guard:
+    skip_oep = os.environ.get("UNLICENSE_GUARD_SKIP_OEP") == "1"
+    if guard and skip_oep:
+        # Diagnostic: the guard alone, with no frida.js in the script at all.
+        source = license_guard.guard_only_source()
+        on_message_callback = license_guard.message_handler(
+            functools.partial(_notify_oep_reached, notify_oep_reached))
+    elif guard:
         # One script for both jobs.  A Frida script has a single exception
         # handler, and frida.js's un-protects every non-execute faulting page and
         # returns true -- which silently disarms the guard's PAGE_GUARD mechanism
