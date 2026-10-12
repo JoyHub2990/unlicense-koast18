@@ -1322,8 +1322,32 @@ function stage2ApplyCmp(context, site) {
     s2.cmpCandidates++;
     if (s2.cmpCandidates <= 4) {
         stage2Log("cmp-candidate", "pc=" + site.address + " mem[" + base +
-            "]=0x" + memVal.toString(16) + " " + regName + "=0x" +
+            "]=" + memVal.toString(16) + " " + regName + "=0x" +
             regVal.toString(16) + " ours=0x" + s2.hash3.toString(16));
+    }
+    /* Census of distinct comparison sites.
+     *
+     * The first-ten log only ever showed the same site (pc=0x140371b85, the
+     * byte-by-byte comparison of the path string "C:\Program"), which cannot
+     * distinguish "the hash_3 comparison never runs" from "it runs and this
+     * matcher does not recognise it". Logging the first occurrence of each
+     * distinct pc, with its operands, answers that in one round. */
+    s2.pcsSeen = s2.pcsSeen || {};
+    if (!s2.pcsSeen[site.address]) {
+        s2.pcsSeen[site.address] = 1;
+        s2.pcCount = (s2.pcCount || 0) + 1;
+        if (s2.pcCount <= 30) {
+            let text = "?";
+            try {
+                text = Instruction.parse(ptr(site.address)).toString();
+            } catch (e) {
+                /* leave the marker */
+            }
+            stage2Log("cmp-pc", "#" + s2.pcCount + " pc=" + site.address +
+                " mem[" + base + "]=0x" + memVal.toString(16) + " " + regName +
+                "=0x" + regVal.toString(16) + " ours=0x" +
+                s2.hash3.toString(16) + " insn=" + text);
+        }
     }
 
     /* Exactly one operand is the hash_3 we generated; the other is what the
