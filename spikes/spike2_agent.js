@@ -861,23 +861,95 @@ function startStage2(decLic) {
         if (s2.sub === 1) {
             s2.sub = 2;
             stage2Log("following-now", "window opened without the guard");
-            /* Hardware breakpoint on the licence's hash_3 field, and no Stalker
-             * window.
+            /* Stop tracing, and watch the one address that matters.
              *
-             * The window costs a JS callback per instruction: rounds 30-32
-             * processed ~4.2M instructions in ~45s, i.e. about 93k/s, which
-             * slows the target roughly a hundredfold and is why the protection
-             * never reaches its OEP. It also saturates the JS thread badly enough
-             * that whether the matcher or the timers get a slot is luck.
+             * whatlicense's stage2.cpp does this in two steps, and both are worth
+             * copying exactly:
              *
-             * A read breakpoint on decLicBuf + 0x33 is native: the CPU raises
-             * EXCEPTION_SINGLE_STEP when the protection reads hash_3, the handler
-             * sees the PC, and that PC is the comparison site. One trap, no
-             * per-instruction cost, and the target keeps running at full speed. */
-            stage2ArmHash3HwBreak();
+             *   1. hash3 = rword(dec_lic + 0x33)          -- our license's value
+             *   2. wait for a read of dec_lic + 0x33 of size 2
+             *   3. from there, find `cmp word ptr [reg1], reg2` where one operand
+             *      equals hash3; the other one is the protection's real hash_3
+             *
+             * Step 2 is the trigger we kept trying to reproduce with a guard page
+             * (which killed the process) and with an always-on Stalker window
+             * (which ran at ~93k instructions/s, a hundredfold slowdown, and is
+             * why the protection never reached its OEP). MemoryAccessMonitor is
+             * native, re-arms itself, and costs nothing per instruction.
+             *
+             * And the transform that Stage 1 needs is attached to every thread at
+             * map time and never detached, so the slowdown was permanent. Unfollow
+             * here: Stage 1 is done with it, Stage 2 only needs a short window
+             * once the read shows up, and the OEP needs full speed. */
+            stage2UnfollowAll();
+            stage2ArmHash3Monitor();
             return;
         }
     }, 0);
+}
+
+/* Native access watch on the license's hash_3 field.
+ *
+ * whatlicense's find_hash_read is exactly this: `(ea == dec_lic + 0x33) && (size
+ * == 2)`. MemoryAccessMonitor gives the same signal without PIN's per-read
+ * callback and without our guard page. */
+function stage2ArmHash3Monitor() {
+    const s2 = stage2State();
+    if (s2.decLicBuf === null || s2.decLicBuf === undefined) {
+        stage2Log("monitor", "no decLicBuf; cannot arm");
+        return;
+    }
+    const address = s2.decLicBuf.add(HASH3_OFFSET);
+    s2.hash3Address = address;
+    s2.hash3Reads = 0;
+    try {
+        MemoryAccessMonitor.enable({
+            base: address,
+            size: 2
+        }, {
+            onAccess: function (details) {
+                s2.hash3Reads = (s2.hash3Reads || 0) + 1;
+                stage2Log("monitor-hit", "#" + s2.hash3Reads + " " +
+                    details.operation + "@" + details.address + " from " +
+                    details.from + " pc=" + details.context[PC_REG] +
+                    " ours=0x" + s2.hash3.toString(16));
+                if (s2.hash3Reads === 1) {
+                    /* The protection is about to compare. Open the window for the
+                     * comparison only -- whatlicense notes WL pushes and pops the
+                     * value a few times first, so it is not the read instruction
+                     * itself that does the comparing. */
+                    s2.sub = 2;
+                    setTimeout(stage2FollowThreads, 0);
+                }
+            }
+        });
+        stage2Log("monitor-armed", "addr=" + address + " size=2");
+    } catch (e) {
+        stage2Log("monitor", "enable failed: " + String(e));
+    }
+}
+
+/* Detach the map-time transform from every thread.
+ *
+ * Stage 1's landmark comes from that transform; Stage 2 does not need it until
+ * the hash_3 read happens, and the protection cannot reach its OEP while every
+ * instruction costs a JS callback. */
+function stage2UnfollowAll() {
+    let count = 0;
+    for (const thread of Process.enumerateThreads()) {
+        try {
+            Stalker.unfollow(thread.id);
+            count++;
+        } catch (e) {
+            /* best effort */
+        }
+    }
+    try {
+        Stalker.flush();
+    } catch (e) {
+        /* best effort */
+    }
+    stage2Log("unfollow-all", "threads=" + count + " (Stage 1 done with the transform)");
 }
 
 /* Read breakpoint on the licence's hash_3 field.
