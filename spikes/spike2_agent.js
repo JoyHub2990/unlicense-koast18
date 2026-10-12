@@ -1413,6 +1413,20 @@ function install(iterator) {
     let insn;
     while ((insn = iterator.next()) !== null) {
         stats.instructions++;
+        /* Tick from inside the transform.
+         *
+         * Round 29 completed stage 1 eight times, armed the guard 8/8, opened the
+         * window 8/8 -- and then produced no cmp-site, no summary and not even the
+         * +3s heartbeat, which means the JS thread stopped servicing timers right
+         * after "following". The only other JS work is this transform, and a
+         * transform entered in a tight loop starves the event loop. This tick is
+         * emitted from the transform itself, so it keeps arriving even if the
+         * timers are starved -- which is exactly the distinction to make. */
+        if (stats.instructions % 20000 === 0) {
+            stage2Log("scan-tick", "instructions=" + stats.instructions +
+                " inside=" + stats.inside + " outside=" + stats.outside +
+                " cmp=" + (plan.stage2 ? (plan.stage2.scanCmp || 0) : 0));
+        }
         const address = insn.address;
         if (address.compare(plan.moduleEnd) >= 0 ||
             address.compare(plan.moduleBase) < 0) {
