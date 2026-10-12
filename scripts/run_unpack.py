@@ -119,18 +119,23 @@ def run_one(pe_rel: str) -> dict:
         # check not let the OEP through" is the only question that matters, and
         # its answers are a handful of lines in a very chatty log.
         #
-        # Two different sources have to be matched. My own progress lines read
-        # "license_guard: ...", but the agent's events read "INFO - guard stage1
-        # ..." and contain neither that prefix nor the word license_guard -- so
-        # matching only the prefix let my two arming lines fill the tail and hid
-        # every agent event, which is why round 11 looked like the guard produced
-        # nothing at all.
+        # Two different sources have to be matched, and by their logging shape
+        # rather than their message text: my own progress lines read
+        # "license_guard: ...", the agent's read "INFO - guard <elapsed> stage1
+        # ...". Matching message substrings hid the agent's events twice -- first
+        # because they contain no "license_guard:" prefix, then because the
+        # elapsed-time stamp I added put "+  12.3s" between "guard" and "stage1"
+        # and broke "guard stage". Match " - guard " (the logging format), which
+        # survives both.
         guard_lines = [
             line for line in log_lines
-            if "license_guard:" in line or "guard stage" in line
-            or "guard lic_copy" in line or "guard exit" in line
-        ][-14:]
-        tail = (guard_lines + log_lines[-4:])[-18:]
+            if "license_guard:" in line or " - guard " in line
+        ]
+        # Keep both ends: the first lines carry lic_copy and "stage1 start", the
+        # last carry whatever the run got to (the landmark and stage1 complete
+        # arrive after start, so a tail-only window would drop the setup and a
+        # head-only one would drop the answer).
+        tail = (guard_lines[:4] + guard_lines[-14:] + log_lines[-4:])[-22:]
         result = {"status": status, "rc": rc,
                   "seconds": round(time.time() - start, 1),
                   "dumps": [d.name for d in dumps],
