@@ -34,7 +34,7 @@ _GUARD = os.environ.get("UNLICENSE_GUARD") == "1"
 # late in this process's startup, so the short window was cutting it off before
 # it began.
 PER_SAMPLE_TIMEOUT = int(
-    os.environ.get("UNLICENSE_SAMPLE_TIMEOUT_S", "240" if _GUARD else "420"))
+    os.environ.get("UNLICENSE_SAMPLE_TIMEOUT_S", "200" if _GUARD else "420"))
 UNLICENSE_OEP_TIMEOUT = int(
     os.environ.get("UNLICENSE_OEP_TIMEOUT_S", "150" if _GUARD else "120"))
 
@@ -118,9 +118,19 @@ def run_one(pe_rel: str) -> dict:
         # Surface the guard's own lines: with the guard on, "why did the licence
         # check not let the OEP through" is the only question that matters, and
         # its answers are a handful of lines in a very chatty log.
-        guard_lines = [line for line in log_lines
-                       if "license_guard:" in line][-6:]
-        tail = (guard_lines + log_lines[-6:])[-8:]
+        #
+        # Two different sources have to be matched. My own progress lines read
+        # "license_guard: ...", but the agent's events read "INFO - guard stage1
+        # ..." and contain neither that prefix nor the word license_guard -- so
+        # matching only the prefix let my two arming lines fill the tail and hid
+        # every agent event, which is why round 11 looked like the guard produced
+        # nothing at all.
+        guard_lines = [
+            line for line in log_lines
+            if "license_guard:" in line or "guard stage" in line
+            or "guard lic_copy" in line or "guard exit" in line
+        ][-14:]
+        tail = (guard_lines + log_lines[-4:])[-18:]
         result = {"status": status, "rc": rc,
                   "seconds": round(time.time() - start, 1),
                   "dumps": [d.name for d in dumps],
@@ -171,7 +181,7 @@ def main() -> int:
             attempts = 1
             if os.environ.get("UNLICENSE_GUARD") == "1":
                 attempts = max(
-                    1, int(os.environ.get("UNLICENSE_GUARD_ATTEMPTS", "4")))
+                    1, int(os.environ.get("UNLICENSE_GUARD_ATTEMPTS", "3")))
             res = {"status": "FAIL", "rc": -1, "seconds": 0.0, "dumps": [],
                    "tail": []}
             for attempt in range(1, attempts + 1):
