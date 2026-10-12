@@ -58,31 +58,46 @@ function hwBreakLayout() {
             contextFlags: CONTEXT_DEBUG_REGISTERS_X86 };
 }
 
+/* Resolve an export across the modules that can carry it.
+ *
+ * Module.getExportByName throws when the module does not export the name, and
+ * CloseHandle did not resolve from kernel32 alone in this process -- the lookup
+ * produced something that was not callable, and the TypeError landed in a finally
+ * block where it masked a successful install. Try the usual carriers. */
+function hwBreakExport(name) {
+    const modules = ["kernel32.dll", "KernelBase.dll", "ntdll.dll"];
+    for (const moduleName of modules) {
+        try {
+            const address = Module.getExportByName(moduleName, name);
+            if (address !== null && address !== undefined) {
+                return address;
+            }
+        } catch (e) {
+            /* not exported here; try the next module */
+        }
+    }
+    return null;
+}
+
 function hwBreakApis() {
     if (hwBreakApis.cache !== undefined) {
         return hwBreakApis.cache;
     }
-    const kernel32 = Module.getExportByName("kernel32.dll", "OpenThread");
+    const kernel32 = hwBreakExport("OpenThread");
     hwBreakApis.cache = {
         OpenThread: new NativeFunction(kernel32, "pointer",
             ["uint32", "int", "uint32"]),
-        CloseHandle: new NativeFunction(
-            Module.getExportByName("kernel32.dll", "CloseHandle"),
-            "int", ["pointer"]),
-        SuspendThread: new NativeFunction(
-            Module.getExportByName("kernel32.dll", "SuspendThread"),
+        CloseHandle: new NativeFunction(hwBreakExport("CloseHandle"), "int",
+            ["pointer"]),
+        SuspendThread: new NativeFunction(hwBreakExport("SuspendThread"),
             "uint32", ["pointer"]),
-        ResumeThread: new NativeFunction(
-            Module.getExportByName("kernel32.dll", "ResumeThread"),
+        ResumeThread: new NativeFunction(hwBreakExport("ResumeThread"),
             "uint32", ["pointer"]),
-        GetThreadContext: new NativeFunction(
-            Module.getExportByName("kernel32.dll", "GetThreadContext"),
+        GetThreadContext: new NativeFunction(hwBreakExport("GetThreadContext"),
             "int", ["pointer", "pointer"]),
-        SetThreadContext: new NativeFunction(
-            Module.getExportByName("kernel32.dll", "SetThreadContext"),
+        SetThreadContext: new NativeFunction(hwBreakExport("SetThreadContext"),
             "int", ["pointer", "pointer"]),
-        GetLastError: new NativeFunction(
-            Module.getExportByName("kernel32.dll", "GetLastError"),
+        GetLastError: new NativeFunction(hwBreakExport("GetLastError"),
             "uint32", [])
     };
     return hwBreakApis.cache;
@@ -146,8 +161,19 @@ function hwBreakApplyToThread(tid, addresses, enable) {
                     "tid=" + tid + " SetThreadContext err=" + api.GetLastError();
             }
         } finally {
-            step = "CloseHandle";
-            api.CloseHandle(handle);
+            /* Closing is best effort, and must never mask a successful install.
+             *
+             * CloseHandle is the one export here that Frida's getExportByName
+             * does not resolve to a callable in this process, and because the
+             * call sat in the finally block its TypeError turned every successful
+             * SetThreadContext into a reported failure -- which is why applied
+             * was 0 on every run since the hardware breakpoint was first tried.
+             * A leaked thread handle is harmless: the process is short-lived. */
+            try {
+                api.CloseHandle(handle);
+            } catch (e) {
+                /* leaked handle; not worth failing the install over */
+            }
         }
         return ok;
     } catch (e) {
