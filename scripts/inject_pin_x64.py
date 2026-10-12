@@ -49,10 +49,22 @@ COND = SQ + "$(Configuration)|$(Platform)" + SQ + "==" + SQ + WIN32 + SQ
 
 
 def to_x64(block: str, arch: dict) -> str:
+    """The Win32 block, with the substitutions the project's own x64 config uses.
+
+    Taken from whatlicense/wl-extract/wl-extract.vcxproj, which already carries
+    Release|x64 blocks for the same sources. Reading them beats guessing: the first
+    attempt used _WIN64 where the project uses __LP64__ and left xed-ia32 in place
+    where it uses xed-intel64, which is why PIN's CRT headers and MSVC's disagreed
+    about uintptr_t.
+    """
     out = block.replace(WIN32, X64)
     out = out.replace("..\\..\\..\\ia32\\", "..\\..\\..\\intel64\\")
+    out = out.replace("extras\\xed-ia32", "extras\\xed-intel64")
     out = out.replace("TARGET_IA32;HOST_IA32", "TARGET_IA32E;HOST_IA32E")
-    out = out.replace("__i386__", "_WIN64")
+    out = out.replace("__i386__", "__LP64__")
+    # The project's x64 blocks name these literally; the auto-detected names (when
+    # the PIN root is passed) override them if the kit spells them differently.
+    out = out.replace("crt\\include\\arch-x86;", "crt\\include\\arch-x86_64;")
     for old, new in arch.items():
         out = out.replace(old, new)
     return out
@@ -73,12 +85,8 @@ def x64_arch_dirs(pin_root: Path) -> dict:
             if entry.is_dir() and entry.name.startswith("arch-") and "86_64" in entry.name:
                 picks["arch-x86"] = entry.name
                 break
-    uapi = crt / "kernel" / "uapi"
-    if uapi.is_dir():
-        for entry in sorted(uapi.iterdir()):
-            if entry.is_dir() and entry.name.startswith("asm-") and "86_64" in entry.name:
-                picks["asm-x86"] = entry.name
-                break
+    # asm-x86 is deliberately NOT remapped: the project's own x64 blocks keep
+    # kernel\uapi\asm-x86 for x64 as well.
     return picks
 
 
