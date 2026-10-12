@@ -191,7 +191,7 @@ def main() -> int:
             attempts = 1
             if os.environ.get("UNLICENSE_GUARD") == "1":
                 attempts = max(
-                    1, int(os.environ.get("UNLICENSE_GUARD_ATTEMPTS", "3")))
+                    1, int(os.environ.get("UNLICENSE_GUARD_ATTEMPTS", "8")))
             res = {"status": "FAIL", "rc": -1, "seconds": 0.0, "dumps": [],
                    "tail": []}
             for attempt in range(1, attempts + 1):
