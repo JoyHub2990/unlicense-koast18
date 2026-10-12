@@ -83,7 +83,15 @@ _MERGE_TAIL = """
  * The two handler call sites above were rewritten to hand their functions to
  * these shims, so neither half installs a handler itself.  Function declarations
  * hoist, so they are defined by the time either half calls one.
+ *
+ * The callbacks must be declared: the agent starts with 'use strict', so
+ * assigning to an undeclared name throws ReferenceError and setup() fails with
+ * '__guardExceptionHandler' is not defined.  `let` at the top level is evaluated
+ * when this tail runs, i.e. at load time, well before setup() is called.
  */
+let __guardExceptionHandler;
+let __fridaExceptionHandler;
+
 function __captureGuardHandler(callback) {
     __guardExceptionHandler = callback;
 }
