@@ -167,6 +167,16 @@ def spawn_and_instrument(
         pid = frida.spawn(
             rundll32_path,
             [rundll32_path, str(pe_path.absolute()), "#0"])
+    elif license_guard.guard_enabled():
+        # Run the target from its own directory.
+        #
+        # The spike2 harness spawns with cwd=workdir and reaches Stage 1
+        # completion; the unpacker spawned without a cwd, and round 19 showed that
+        # is not the OEP tracer's doing (the guard alone, with no frida.js in the
+        # script, stalls in exactly the same place: all events within half a
+        # second, then nothing for 151s). A protected app resolves its licence and
+        # its data relative to its own directory, so give it one.
+        pid = frida.spawn(str(pe_path), cwd=str(pe_path.parent))
     else:
         pid = frida.spawn(str(pe_path))
 
