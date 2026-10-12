@@ -26,6 +26,8 @@ existing flow is byte-for-byte unchanged.
 import json
 import logging
 import os
+import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -33,6 +35,43 @@ import frida
 import frida.core
 
 LOG = logging.getLogger(__name__)
+
+
+def _say(message: str) -> None:
+    """Report on stdout as well as through logging.
+
+    The first guarded unpack run produced no guard output at all and died on the
+    300s hard kill with rc=-1, so there was no way to tell whether the agent was
+    installed, hung, or never loaded. Logging alone was not enough: the level in
+    that run did not surface it. Say it plainly.
+    """
+    LOG.info("%s", message)
+    print("license_guard: " + message, flush=True)
+
+
+def _rpc_with_timeout(call: Any, seconds: float, what: str) -> Any:
+    """Run an RPC with a deadline.
+
+    A deadlocked agent makes an RPC block forever -- spikes/run_spike2.py wraps
+    every call for exactly this reason. Without a deadline here the unpacker hung
+    until the runner's hard kill, which is what rc=-1 330.1s means.
+    """
+    box: Dict[str, Any] = {}
+
+    def worker() -> None:
+        try:
+            box["value"] = call()
+        except Exception as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if thread.is_alive():
+        raise TimeoutError(f"{what} did not return within {seconds}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 # The agent compares this many leading bytes of the mapped licence.
 HEAD_LEN = 8
@@ -153,53 +192,74 @@ def install(session: frida.core.Session, pe_path: Path) -> Optional[Any]:
     """
     if not guard_enabled():
         return None
+    _say(f"enabled; looking for a licence next to {pe_path.name}")
     licence = find_license_file(pe_path)
     if licence is None:
-        LOG.warning("UNLICENSE_GUARD=1 but no licence file found next to %s; "
-                    "the protection will reject the run", pe_path.name)
+        _say("no licence file found; the protection will reject the run")
         return None
     try:
         head_hex = licence.read_bytes()[:HEAD_LEN].hex()
     except OSError as exc:
-        LOG.warning("guard: cannot read %s: %s", licence, exc)
+        _say(f"cannot read {licence}: {exc}")
         return None
     rsa_keys = find_rsa_keys(pe_path)
     if rsa_keys is None:
         # Without our keys Stage 1 has nothing to swap in, and the protection
         # keeps its own -- which will reject our licence.  Say so rather than
         # producing an rc=4 that looks like a timeout.
-        LOG.warning("guard: no RSA keys (UNLICENSE_GUARD_RSA or a sibling "
-                    "regkey.rsa); Stage 1 cannot replace the embedded keys")
-    script = session.create_script(_agent_source())
-    script.on("message", _on_message)
-    script.load()
-    script.exports_sync.setup({
-        "headHex": head_hex,
-        "ntPath": _windows_nt_path(licence),
-        "licenseFile": str(licence),
-        "licSize": licence.stat().st_size,
-        "rsaKeys": rsa_keys,
-        # The protection unpacks at native speed unless tracing is deferred.
-        "deferTracing": True,
-        # A real sample calls the RSA routine once; whatlicense's model needs
-        # dec_sections + 1.
-        "stage1CompleteAfter": 1,
-        # An exponent of 1 makes the protection's decrypt the identity, so the
-        # decrypted buffer is the licence blob itself instead of a lottery.
-        "identityKey": True,
-        "guardSpan": 0x4000,
-    })
-    LOG.info("guard agent armed: licence=%s head=%s rsaKeys=%s",
-             licence, head_hex, rsa_keys is not None)
+        _say("no RSA keys (UNLICENSE_GUARD_RSA or a sibling regkey.rsa); "
+             "Stage 1 cannot replace the embedded keys")
+    source = _agent_source()
+    _say(f"loading agent ({len(source)} bytes)")
+
+    def _load() -> Any:
+        created = session.create_script(source)
+        created.on("message", _on_message)
+        created.load()
+        return created
+
+    # Bounded, and non-fatal: if the agent cannot be loaded the run should behave
+    # exactly as it did before the guard existed (an OEP timeout at worst), not
+    # hang until the runner's hard kill.
+    try:
+        script = _rpc_with_timeout(_load, 90.0, "guard script load")
+    except Exception as exc:  # noqa: BLE001
+        _say(f"could not load the guard agent ({exc}); continuing without it")
+        return None
+    _say("agent loaded; calling setup")
+    try:
+        _rpc_with_timeout(lambda: script.exports_sync.setup({
+            "headHex": head_hex,
+            "ntPath": _windows_nt_path(licence),
+            "licenseFile": str(licence),
+            "licSize": licence.stat().st_size,
+            "rsaKeys": rsa_keys,
+            # The protection unpacks at native speed unless tracing is deferred.
+            "deferTracing": True,
+            # A real sample calls the RSA routine once; whatlicense's model needs
+            # dec_sections + 1.
+            "stage1CompleteAfter": 1,
+            # An exponent of 1 makes the protection's decrypt the identity, so the
+            # decrypted buffer is the licence blob itself instead of a lottery.
+            "identityKey": True,
+            "guardSpan": 0x4000,
+        }), 60.0, "guard setup")
+    except Exception as exc:  # noqa: BLE001
+        _say(f"guard setup failed ({exc}); continuing without it")
+        return None
+    _say(f"armed: licence={licence} head={head_hex} "
+         f"rsaKeys={'yes' if rsa_keys else 'no'}")
     return script
 
 
 def start_tracing(script: Any) -> None:
-    """Arm Stalker once the process is running.  Never raises."""
+    """Arm Stalker once the process is running.  Never raises, never blocks."""
     if script is None:
         return
     try:
-        result = script.exports_sync.start_tracing()
-        LOG.info("guard tracing: %s", result)
+        result = _rpc_with_timeout(
+            lambda: script.exports_sync.start_tracing(), 30.0,
+            "guard start_tracing")
+        _say(f"tracing: {result}")
     except Exception as exc:  # noqa: BLE001
-        LOG.warning("guard: start_tracing failed: %s", exc)
+        _say(f"start_tracing failed: {exc}")

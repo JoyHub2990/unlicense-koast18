@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "results"
 RUNS = ROOT / "runs"
 
-PER_SAMPLE_TIMEOUT = 300  # hard kill guard (unlicense has its own --timeout)
+PER_SAMPLE_TIMEOUT = 420  # hard kill guard (unlicense has its own --timeout)
 UNLICENSE_OEP_TIMEOUT = 120  # seconds to wait for OEP inside unlicense
 
 
@@ -63,18 +63,31 @@ def run_one(pe_rel: str) -> dict:
     start = time.time()
     result = {"status": "FAIL", "rc": -1, "seconds": 0.0,
               "dumps": [], "tail": []}
+    # Send the child's output straight to a file rather than a pipe.
+    #
+    # The first guarded run died on the hard kill with rc=-1 and the exception
+    # path threw away everything the child had written, so a hang left no
+    # evidence at all -- not even the guard's own "armed" lines. A file survives
+    # the kill, and it is written to the same place the report reads.
+    log_path = RESULTS / "logs" / f"{label}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        proc = subprocess.Popen(cmd, cwd=workdir, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True,
-                                errors="replace", bufsize=1)
-        try:
-            out, _ = proc.communicate(timeout=PER_SAMPLE_TIMEOUT)
-            rc = proc.returncode
-        except subprocess.TimeoutExpired:
-            kill_tree(proc)
-            out, _ = proc.communicate(timeout=30)
-            rc = -999
-        log_lines = (out or "").splitlines()
+        with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+            proc = subprocess.Popen(cmd, cwd=workdir, stdout=log,
+                                    stderr=subprocess.STDOUT, text=True,
+                                    errors="replace", bufsize=1)
+            try:
+                proc.wait(timeout=PER_SAMPLE_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                kill_tree(proc)
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=15)
+        rc = proc.returncode
+        out = log_path.read_text(encoding="utf-8", errors="replace")
+        log_lines = out.splitlines()
         dumps = [d for d in workdir.glob("unpacked_*")
                  if d.is_file() and d.stat().st_size > 1024]
 
@@ -87,19 +100,20 @@ def run_one(pe_rel: str) -> dict:
         else:
             status = "FAIL"
 
+        # Surface the guard's own lines: with the guard on, "why did the licence
+        # check not let the OEP through" is the only question that matters, and
+        # its answers are a handful of lines in a very chatty log.
+        guard_lines = [line for line in log_lines
+                       if "license_guard:" in line][-6:]
+        tail = (guard_lines + log_lines[-6:])[-8:]
         result = {"status": status, "rc": rc,
                   "seconds": round(time.time() - start, 1),
                   "dumps": [d.name for d in dumps],
-                  "tail": log_lines[-6:]}
+                  "tail": tail}
         out_dir = RESULTS / "unpacked"
         out_dir.mkdir(exist_ok=True)
         for d in dumps:
             shutil.copy(d, out_dir / f"{label}_{d.name}")
-        (RESULTS / "logs").mkdir(exist_ok=True)
-        # A generous window: the startup diagnostics we care about (data
-        # directories, .NET detection) sit at the top of a very chatty log.
-        (RESULTS / "logs" / f"{label}.log").write_text(
-            "\n".join(log_lines[-1500:]))
     except Exception as exc:  # noqa: BLE001
         result = {"status": "ERROR", "rc": -1,
                   "seconds": round(time.time() - start, 1),
@@ -136,6 +150,8 @@ def main() -> int:
             res = run_one(pe_info["path"])
             print(f"[{label}] -> {res['status']} rc={res['rc']} "
                   f"{res['seconds']}s dumps={res['dumps']}", flush=True)
+            for line in res.get("tail", []):
+                print(f"[{label}]   {line}", flush=True)
             if res["status"] in ("FAIL", "ERROR"):
                 has_bad = True
             rows.append({"label": label, "pe": Path(pe_info["path"]).name,
