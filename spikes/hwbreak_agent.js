@@ -98,42 +98,63 @@ function hwBreakApis() {
  * the debug registers, so the rest of the context is left alone.
  */
 function hwBreakApplyToThread(tid, addresses, enable) {
-    const api = hwBreakApis();
-    const layout = hwBreakLayout();
-    const handle = api.OpenThread(THREAD_ACCESS, 0, tid);
-    if (handle.isNull()) {
+    /* Every step is labelled.
+     *
+     * Round 35 finally said what the failure is -- "TypeError: not a function" --
+     * but not where, and the same run had some threads throwing and others
+     * returning false, which no single call site explains. A step label turns the
+     * next round into the line number. */
+    let step = "hwBreakApis";
+    try {
+        const api = hwBreakApis();
+        step = "hwBreakLayout";
+        const layout = hwBreakLayout();
+        step = "OpenThread";
+        const handle = api.OpenThread(THREAD_ACCESS, 0, tid);
+        if (handle.isNull()) {
+            hwBreakApplyToThread.lastError =
+                "tid=" + tid + " OpenThread err=" + api.GetLastError();
+            return false;
+        }
+        let ok = false;
+        try {
+            step = "alloc";
+            const ctx = Memory.alloc(CONTEXT_BUF_SIZE);
+            step = "zero";
+            ctx.writeByteArray(new Uint8Array(CONTEXT_BUF_SIZE));
+            /* ContextFlags is a FIELD at layout.flags (0x30 on x64), not
+             * offset 0. Writing the value at offset 0 left the real
+             * ContextFlags field zero and SetThreadContext rejected the
+             * context. */
+            step = "ContextFlags";
+            ctx.add(layout.flags).writeU32(layout.contextFlags);
+            if (enable) {
+                step = "Dr0";
+                ctx.add(layout.dr0).writePointer(addresses[0] || ptr(0));
+                step = "Dr1";
+                ctx.add(layout.dr1).writePointer(addresses[1] || ptr(0));
+                step = "Dr2";
+                ctx.add(layout.dr2).writePointer(addresses[2] || ptr(0));
+                step = "Dr7";
+                ctx.add(layout.dr7).writePointer(ptr(DR7_THREE_RW_BYTE));
+            }
+            step = "SetThreadContext";
+            ok = api.SetThreadContext(handle, ctx).toInt32() !== 0;
+            if (!ok) {
+                step = "GetLastError";
+                hwBreakApplyToThread.lastError =
+                    "tid=" + tid + " SetThreadContext err=" + api.GetLastError();
+            }
+        } finally {
+            step = "CloseHandle";
+            api.CloseHandle(handle);
+        }
+        return ok;
+    } catch (e) {
         hwBreakApplyToThread.lastError =
-            "tid=" + tid + " OpenThread err=" + api.GetLastError();
+            "tid=" + tid + " at " + step + ": " + String(e);
         return false;
     }
-    let ok = false;
-    try {
-        const ctx = Memory.alloc(CONTEXT_BUF_SIZE);
-        ctx.writeByteArray(new Uint8Array(CONTEXT_BUF_SIZE));
-        /* ContextFlags is a FIELD at layout.flags (0x30 on x64), not offset 0.
-         *
-         * Writing the value at offset 0 left the real ContextFlags field zero,
-         * SetThreadContext then rejected the context and every thread counted as
-         * failed -- which is why the hardware-breakpoint landmark reported
-         * applied:0 failed:4 on every run it was tried. */
-        ctx.add(layout.flags).writeU32(layout.contextFlags);
-        if (enable) {
-            ctx.add(layout.dr0).writePointer(addresses[0] || ptr(0));
-            ctx.add(layout.dr1).writePointer(addresses[1] || ptr(0));
-            ctx.add(layout.dr2).writePointer(addresses[2] || ptr(0));
-            ctx.add(layout.dr7).writePointer(ptr(DR7_THREE_RW_BYTE));
-        }
-        /* Disabling writes zeros, which is what the zeroed buffer already
-         * holds -- only ContextFlags needs to be set. */
-        ok = api.SetThreadContext(handle, ctx).toInt32() !== 0;
-        if (!ok) {
-            hwBreakApplyToThread.lastError =
-                "tid=" + tid + " SetThreadContext err=" + api.GetLastError();
-        }
-    } finally {
-        api.CloseHandle(handle);
-    }
-    return ok;
 }
 
 /* Install on every thread that exists right now. Threads created later are
