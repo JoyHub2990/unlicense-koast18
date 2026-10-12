@@ -28,13 +28,15 @@ RESULTS = ROOT / "results"
 RUNS = ROOT / "runs"
 
 _GUARD = os.environ.get("UNLICENSE_GUARD") == "1"
-# With the guard on the run is repeated (see main), so each attempt is kept short:
-# the landmark shows up within ~45s when it happens at all, and three 90s attempts
-# cost less than one 420s one while covering three times as many chances.
+# Windows measured, not guessed: with the guard armed, the attempts that were
+# allowed 150s reached lic_copy recovery, licence-page guard hits and sub4-leave,
+# while the ones cut at 90s produced nothing. The protection's licence check sits
+# late in this process's startup, so the short window was cutting it off before
+# it began.
 PER_SAMPLE_TIMEOUT = int(
-    os.environ.get("UNLICENSE_SAMPLE_TIMEOUT_S", "150" if _GUARD else "420"))
+    os.environ.get("UNLICENSE_SAMPLE_TIMEOUT_S", "240" if _GUARD else "420"))
 UNLICENSE_OEP_TIMEOUT = int(
-    os.environ.get("UNLICENSE_OEP_TIMEOUT_S", "90" if _GUARD else "120"))
+    os.environ.get("UNLICENSE_OEP_TIMEOUT_S", "150" if _GUARD else "120"))
 
 
 def interpreter_bitness() -> str:
