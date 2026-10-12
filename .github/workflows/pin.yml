@@ -179,16 +179,27 @@ jobs:
           $target = "${{ inputs.target }}"
           $log = Join-Path $root 'wl_log.txt'
           Write-Host "running: $pin -t $ext -d regkey.dat -r regkey.rsa -o $log -- $target"
+          $out = Join-Path $root 'pin_stdout.txt'
+          $err = Join-Path $root 'pin_stderr.txt'
           $p = Start-Process -FilePath $pin `
             -ArgumentList @('-t', $ext, '-d', 'regkey.dat', '-r', 'regkey.rsa',
                             '-o', $log, '--', (Join-Path (Get-Location).Path $target)) `
-            -NoNewWindow -PassThru
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
           $deadline = [int]"${{ inputs.timeout_s }}"
           if (-not $p.WaitForExit($deadline * 1000)) {
             Write-Host "PIN did not exit within $deadline s -- killing"
             try { $p.Kill() } catch {}
           } else {
             Write-Host "PIN exited with $($p.ExitCode)"
+          }
+          # PIN reports a tool that failed to load on stderr and exits -1; without
+          # this the reason is invisible (round 46: exited -1, no log at all).
+          foreach ($f in @($out, $err)) {
+            if (Test-Path $f) {
+              Write-Host "===== $(Split-Path $f -Leaf) ====="
+              Get-Content $f -Tail 60 | ForEach-Object { Write-Host $_ }
+            }
           }
           Pop-Location
           if (Test-Path $log) {
