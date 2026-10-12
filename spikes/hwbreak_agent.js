@@ -80,7 +80,10 @@ function hwBreakApis() {
             "int", ["pointer", "pointer"]),
         SetThreadContext: new NativeFunction(
             Module.getExportByName("kernel32.dll", "SetThreadContext"),
-            "int", ["pointer", "pointer"])
+            "int", ["pointer", "pointer"]),
+        GetLastError: new NativeFunction(
+            Module.getExportByName("kernel32.dll", "GetLastError"),
+            "uint32", [])
     };
     return hwBreakApis.cache;
 }
@@ -99,6 +102,8 @@ function hwBreakApplyToThread(tid, addresses, enable) {
     const layout = hwBreakLayout();
     const handle = api.OpenThread(THREAD_ACCESS, 0, tid);
     if (handle.isNull()) {
+        hwBreakApplyToThread.lastError =
+            "tid=" + tid + " OpenThread err=" + api.GetLastError();
         return false;
     }
     let ok = false;
@@ -121,6 +126,10 @@ function hwBreakApplyToThread(tid, addresses, enable) {
         /* Disabling writes zeros, which is what the zeroed buffer already
          * holds -- only ContextFlags needs to be set. */
         ok = api.SetThreadContext(handle, ctx).toInt32() !== 0;
+        if (!ok) {
+            hwBreakApplyToThread.lastError =
+                "tid=" + tid + " SetThreadContext err=" + api.GetLastError();
+        }
     } finally {
         api.CloseHandle(handle);
     }
@@ -140,6 +149,7 @@ function hwBreakInstall(plan, addresses) {
     }
     let applied = 0;
     let failed = 0;
+    const reasons = [];
     for (const thread of Process.enumerateThreads()) {
         let ok = false;
         try {
@@ -152,12 +162,16 @@ function hwBreakInstall(plan, addresses) {
             plan.hwBreakThreads.push(thread.id);
         } else {
             failed++;
+            if (reasons.length < 3) {
+                reasons.push(hwBreakApplyToThread.lastError || "unknown");
+            }
         }
     }
     plan.hwBreakActive = applied > 0;
     plan.emit({ spike: "hwbreak", event: "installed",
                 addresses: targets.map(String),
                 applied: applied, failed: failed,
+                reasons: reasons,
                 dr7: "0x" + DR7_THREE_RW_BYTE.toString(16) });
     return plan.hwBreakActive;
 }
