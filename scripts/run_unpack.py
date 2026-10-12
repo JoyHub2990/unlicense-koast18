@@ -28,15 +28,16 @@ RESULTS = ROOT / "results"
 RUNS = ROOT / "runs"
 
 _GUARD = os.environ.get("UNLICENSE_GUARD") == "1"
-# Windows measured, not guessed: with the guard armed, the attempts that were
-# allowed 150s reached lic_copy recovery, licence-page guard hits and sub4-leave,
-# while the ones cut at 90s produced nothing. The protection's licence check sits
-# late in this process's startup, so the short window was cutting it off before
-# it began.
+# Windows measured, not guessed.  With the target launched from its own directory
+# (frida_exec), the whole chain runs early: lic_copy at +0.5s, the licence-page
+# guard hits at +1.4s, and on the attempt where it lands, sub4-found-mp_exptmod ->
+# swap -> stage1 complete -> stage2 start at +1.8s.  Stage 1 completes on roughly
+# one attempt in nine, so the useful lever is attempts, not a long window: a short
+# attempt buys several chances for the wall clock of one long one.
 PER_SAMPLE_TIMEOUT = int(
-    os.environ.get("UNLICENSE_SAMPLE_TIMEOUT_S", "200" if _GUARD else "420"))
+    os.environ.get("UNLICENSE_SAMPLE_TIMEOUT_S", "90" if _GUARD else "420"))
 UNLICENSE_OEP_TIMEOUT = int(
-    os.environ.get("UNLICENSE_OEP_TIMEOUT_S", "150" if _GUARD else "120"))
+    os.environ.get("UNLICENSE_OEP_TIMEOUT_S", "60" if _GUARD else "120"))
 
 
 def interpreter_bitness() -> str:
