@@ -27,8 +27,14 @@ ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "results"
 RUNS = ROOT / "runs"
 
-PER_SAMPLE_TIMEOUT = 420  # hard kill guard (unlicense has its own --timeout)
-UNLICENSE_OEP_TIMEOUT = 120  # seconds to wait for OEP inside unlicense
+_GUARD = os.environ.get("UNLICENSE_GUARD") == "1"
+# With the guard on the run is repeated (see main), so each attempt is kept short:
+# the landmark shows up within ~45s when it happens at all, and three 90s attempts
+# cost less than one 420s one while covering three times as many chances.
+PER_SAMPLE_TIMEOUT = int(
+    os.environ.get("UNLICENSE_SAMPLE_TIMEOUT_S", "150" if _GUARD else "420"))
+UNLICENSE_OEP_TIMEOUT = int(
+    os.environ.get("UNLICENSE_OEP_TIMEOUT_S", "90" if _GUARD else "120"))
 
 
 def interpreter_bitness() -> str:
@@ -152,13 +158,33 @@ def main() -> int:
                              "status": "SKIP_ARCH", "rc": "-",
                              "seconds": 0, "tail": []})
                 continue
-            print(f"[{label}] running {pe_info['path']} "
-                  f"(v{pe_info['version']}) ...", flush=True)
-            res = run_one(pe_info["path"])
-            print(f"[{label}] -> {res['status']} rc={res['rc']} "
-                  f"{res['seconds']}s dumps={res['dumps']}", flush=True)
-            for line in res.get("tail", []):
-                print(f"[{label}]   {line}", flush=True)
+            # Repeat when the guard is on.
+            #
+            # The landmark Stage 1 depends on is a per-attempt event: the spike2
+            # harness buys attempts with --repeat 20 and completes Stage 1 in
+            # roughly one in eight of them. The unpacker gets one run per sample
+            # unless it repeats too, which is why every guarded unpack run so far
+            # ended in an OEP timeout even though the guard was armed and its
+            # licence-page hits were visible. See handoff 9.58.
+            attempts = 1
+            if os.environ.get("UNLICENSE_GUARD") == "1":
+                attempts = max(
+                    1, int(os.environ.get("UNLICENSE_GUARD_ATTEMPTS", "3")))
+            res = {"status": "FAIL", "rc": -1, "seconds": 0.0, "dumps": [],
+                   "tail": []}
+            for attempt in range(1, attempts + 1):
+                print(f"[{label}] running {pe_info['path']} "
+                      f"(v{pe_info['version']}) attempt {attempt}/{attempts} ...",
+                      flush=True)
+                res = run_one(pe_info["path"])
+                print(f"[{label}] -> {res['status']} rc={res['rc']} "
+                      f"{res['seconds']}s dumps={res['dumps']}", flush=True)
+                for line in res.get("tail", []):
+                    print(f"[{label}]   {line}", flush=True)
+                # rc=4 is unlicense's "OEP not reached" -- the one outcome worth
+                # another attempt. A crash or a dump means stop.
+                if res["dumps"] or res["rc"] != 4:
+                    break
             if res["status"] in ("FAIL", "ERROR"):
                 has_bad = True
             rows.append({"label": label, "pe": Path(pe_info["path"]).name,
