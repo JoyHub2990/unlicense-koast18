@@ -171,10 +171,21 @@ def spawn_and_instrument(
 
     main_module_name = pe_path.name
     session = frida.attach(pid)
-    frida_js = resources.open_text("unlicense.resources", "frida.js").read()
-    script = session.create_script(frida_js)
-    on_message_callback = functools.partial(_frida_callback,
-                                            notify_oep_reached)
+    guard = license_guard.guard_enabled()
+    if guard:
+        # One script for both jobs.  A Frida script has a single exception
+        # handler, and frida.js's un-protects every non-execute faulting page and
+        # returns true -- which silently disarms the guard's PAGE_GUARD mechanism
+        # -- while the guard's would silently disable OEP detection. See
+        # license_guard.
+        source = license_guard.combined_source()
+        on_message_callback = license_guard.message_handler(
+            functools.partial(_notify_oep_reached, notify_oep_reached))
+    else:
+        source = resources.open_text("unlicense.resources", "frida.js").read()
+        on_message_callback = functools.partial(_frida_callback,
+                                                notify_oep_reached)
+    script = session.create_script(source)
     script.on('message', on_message_callback)
     script.load()
 
@@ -183,19 +194,27 @@ def spawn_and_instrument(
                                                 script)
     frida_rpc.setup_oep_tracing(pe_path.name, [[r.base, r.size]
                                                for r in text_section_ranges])
-    # Neutralize the licence protection in this same process, before resuming.
+    # Point the guard at the licence and start it, still before resuming.
     #
     # The OEP is only reachable if the licence is accepted: on a real protected
     # sample the protection refuses to let the unpacked image run, so the OEP
     # never fires and the run dies with rc=4 (OEP timeout). See
-    # unlicense-handoff.md section 9.29. Both agents must live in one session for
+    # unlicense-handoff.md section 9.29. Both halves must share one process for
     # that reason -- a separate run cannot help.
-    guard_script = license_guard.install(session, pe_path)
+    armed = license_guard.arm(script, pe_path) if guard else False
     frida.resume(pid)
     # Stalker only takes effect on a running thread.
-    license_guard.start_tracing(guard_script)
+    if armed:
+        license_guard.start_tracing(script)
 
     return process_controller
+
+
+def _notify_oep_reached(notify_oep_reached: OepReachedCallback,
+                        payload: Dict[str, Any]) -> None:
+    """Adapt the merged script's oep_reached message to the callback."""
+    notify_oep_reached(int(payload['BASE'], 16), int(payload['OEP'], 16),
+                       bool(payload['DOTNET']))
 
 
 def _frida_callback(notify_oep_reached: OepReachedCallback,

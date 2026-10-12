@@ -6,8 +6,8 @@ enough: the protection refuses to let the unpacked image run while the licence i
 rejected, so the OEP never fires and the run dies with ``rc=4`` (OEP timeout).
 See ``unlicense-handoff.md`` sections 9.29 and 9.48.
 
-This module loads the agent the ``spikes/spike2_agent.js`` harness uses into the
-*same* Frida session, before the process is resumed:
+The guard agent (``spikes/hwbreak_agent.js`` plus ``spikes/spike2_agent.js``)
+does the neutralizing:
 
 * Stage 0 recovers ``lic_copy`` -- where the protection copies the mapped
   licence.
@@ -19,22 +19,91 @@ This module loads the agent the ``spikes/spike2_agent.js`` harness uses into the
 All three have to run in the same process as the OEP tracing: the licence must be
 accepted for the OEP to be reached at all, so a separate run cannot help.
 
-Enabled by ``UNLICENSE_GUARD=1``.  Without it this module does nothing and the
-existing flow is byte-for-byte unchanged.
+**One script, one exception handler.**  ``frida.js`` needs
+``Process.setExceptionHandler`` to find the OEP, and the guard needs it because
+its whole mechanism is PAGE_GUARD faults.  A Frida script has exactly one
+handler, so installing the guard's would silently disable OEP detection and
+installing ``frida.js``'s would silently disarm the guard -- ``frida.js``
+un-protects every non-execute faulting page and returns true, so the guard would
+never see its own fault.  This module therefore concatenates the guard modules
+and ``frida.js`` into a single source, merges their ``rpc.exports``, and installs
+one handler that asks the guard first and falls through to the OEP handler.
+
+Enabled by ``UNLICENSE_GUARD=1``.  Without it none of this is used and the
+existing flow is unchanged.
 """
 
 import json
 import logging
 import os
-import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import frida
 import frida.core
 
 LOG = logging.getLogger(__name__)
+
+# The agent compares this many leading bytes of the mapped licence.
+HEAD_LEN = 8
+
+# The guard is more than one file.  Frida evaluates a single source string, so
+# the helper module must be inlined ahead of the main agent -- the same order
+# spikes/run_spike2.py uses.  spike2_agent.js calls hwBreakOnException, which
+# hwbreak_agent.js defines; loading spike2_agent.js alone left the identifier
+# undefined and the exception handler threw ReferenceError on its first
+# exception, so neither Stage 1's guard-page path nor Stage 2's guard ever ran:
+#   guard stage1 exception-handler-error ReferenceError: 'hwBreakOnException' is not defined
+_GUARD_MODULES = ("hwbreak_agent.js", "spike2_agent.js")
+
+# How the two halves install their exception handlers, and how the guard declares
+# its exports.  Rewriting these at load time is what lets one script host both.
+_GUARD_HANDLER_CALL = "Process.setExceptionHandler(function (details) {"
+_FRIDA_HANDLER_CALL = "Process.setExceptionHandler(exp => {"
+_GUARD_EXPORTS = "rpc.exports = {"
+
+# Appended after both halves are evaluated: one handler, and one exports object.
+_MERGE_TAIL = """
+/* One handler for both halves, and one exports object.
+ *
+ * A Frida script has a single exception handler, so the second
+ * Process.setExceptionHandler call replaces the first: the guard would be
+ * disarmed by frida.js (which un-protects every non-execute faulting page and
+ * returns true) or OEP detection would be disabled by the guard. Keep both
+ * callbacks and call the guard's first -- it only claims faults inside its own
+ * guarded ranges.
+ */
+(function () {
+    const __fridaExports = rpc.exports || {};
+    rpc.exports = Object.assign({}, __fridaExports, __guardRpc, {
+        install_exception_handler: function () {
+            Process.setExceptionHandler(function (details) {
+                try {
+                    if (__guardExceptionHandler !== undefined &&
+                        __guardExceptionHandler(details)) {
+                        return true;
+                    }
+                } catch (e) {
+                    /* fall through to the OEP handler rather than losing the
+                     * exception entirely */
+                }
+                try {
+                    return __fridaExceptionHandler !== undefined
+                        ? __fridaExceptionHandler(details) : false;
+                } catch (e) {
+                    return false;
+                }
+            });
+            return true;
+        }
+    });
+})();
+"""
+
+
+def guard_enabled() -> bool:
+    return os.environ.get("UNLICENSE_GUARD") == "1"
 
 
 def _say(message: str) -> None:
@@ -49,7 +118,8 @@ def _say(message: str) -> None:
     print("license_guard: " + message, flush=True)
 
 
-def _rpc_with_timeout(call: Any, seconds: float, what: str) -> Any:
+def _rpc_with_timeout(call: Callable[[], Any], seconds: float,
+                      what: str) -> Any:
     """Run an RPC with a deadline.
 
     A deadlocked agent makes an RPC block forever -- spikes/run_spike2.py wraps
@@ -74,30 +144,14 @@ def _rpc_with_timeout(call: Any, seconds: float, what: str) -> Any:
     return box.get("value")
 
 
-# The agent compares this many leading bytes of the mapped licence.
-HEAD_LEN = 8
+def _search_dirs() -> List[Path]:
+    """Where to look for the agent modules, most specific first.
 
-# Where the agent lives.  It is the same file the spike2 harness loads, so the
-# two cannot drift apart.
-_AGENT_NAME = "spike2_agent.js"
-
-# The agent is not one file.  Frida evaluates a single source string, so the
-# helper module is inlined ahead of the main agent -- the same order
-# spikes/run_spike2.py uses.  spike2_agent.js calls hwBreakOnException, which
-# hwbreak_agent.js defines; loading spike2_agent.js alone left the identifier
-# undefined and the exception handler threw ReferenceError on its first
-# exception, so Stage 1's guard-page path and Stage 2's guard never ran. The
-# guarded CI run said so exactly:
-#   guard stage1 exception-handler-error ReferenceError: 'hwBreakOnException' is not defined
-_AGENT_MODULES = ("hwbreak_agent.js", "spike2_agent.js")
-
-
-def guard_enabled() -> bool:
-    return os.environ.get("UNLICENSE_GUARD") == "1"
-
-
-def _agent_dirs() -> "list[Path]":
-    """Where to look for the agent modules, most specific first."""
+    The first guarded CI run died with FileNotFoundError because the package is
+    installed into site-packages, where ``Path(__file__).parent.parent`` has no
+    ``spikes/`` beside it; UNLICENSE_GUARD_AGENT (set by run_unpack.py) is
+    honoured first for that reason.
+    """
     dirs = []
     override = os.environ.get("UNLICENSE_GUARD_AGENT")
     if override:
@@ -109,27 +163,73 @@ def _agent_dirs() -> "list[Path]":
     return dirs
 
 
-def _agent_source() -> str:
-    """Concatenate the agent modules into one script.
+def _read_module(name: str) -> str:
+    dirs = _search_dirs()
+    for directory in dirs:
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate.read_text()
+    raise FileNotFoundError(f"agent module {name!r} not found in "
+                            f"{[str(d) for d in dirs]}")
 
-    The first guarded CI run died with FileNotFoundError because the package is
-    installed into site-packages, where ``Path(__file__).parent.parent`` has no
-    ``spikes/`` beside it; UNLICENSE_GUARD_AGENT (set by run_unpack.py) is
-    honoured first for that reason.
+
+def combined_source() -> str:
+    """One script source: guard modules, then frida.js, then the merge tail.
+
+    The guard's modules come first because spike2_agent.js calls
+    hwBreakOnException, which hwbreak_agent.js defines. frida.js follows so its
+    ``rpc.exports`` assignment happens before the tail merges the two.
     """
-    dirs = _agent_dirs()
-    parts = []
-    for name in _AGENT_MODULES:
-        for directory in dirs:
-            candidate = directory / name
-            if candidate.is_file():
-                parts.append(candidate.read_text())
-                break
-        else:
-            raise FileNotFoundError(
-                f"guard agent module {name!r} not found in "
-                f"{[str(d) for d in dirs]}")
-    return "\n".join(parts)
+    guard = "\n".join(_read_module(name) for name in _GUARD_MODULES)
+    if _GUARD_HANDLER_CALL not in guard:
+        raise ValueError("guard agent: exception handler call not found; the "
+                         "merge would leave the guard disarmed")
+    if _GUARD_EXPORTS not in guard:
+        raise ValueError("guard agent: rpc.exports not found")
+    guard = guard.replace(_GUARD_HANDLER_CALL,
+                          "__guardExceptionHandler = function (details) {", 1)
+    guard = guard.replace(_GUARD_EXPORTS, "const __guardRpc = {", 1)
+    frida = _read_module("frida.js")
+    if _FRIDA_HANDLER_CALL not in frida:
+        raise ValueError(
+            "frida.js: exception handler call not found; the merge "
+            "would leave OEP detection disabled")
+    frida = frida.replace(_FRIDA_HANDLER_CALL,
+                          "__fridaExceptionHandler = exp => {", 1)
+    return "\n".join([guard, frida, _MERGE_TAIL])
+
+
+def message_handler(
+    on_oep_reached: Callable[[Dict[str, Any]], None]
+) -> Callable[[Dict[str, Any], Any], None]:
+    """Dispatch both halves' messages.  Never raises on an unknown message.
+
+    ``frida_exec._frida_callback`` raises NotImplementedError for anything it
+    does not recognise, which a merged script would trip on the first guard
+    event.
+    """
+
+    def handler(message: Dict[str, Any], _data: Any) -> None:
+        kind = message.get("type")
+        if kind == "error":
+            LOG.error("agent error: %s", message.get("description"))
+            LOG.debug("%s", message.get("stack"))
+            return
+        if kind != "send":
+            return
+        payload = message.get("payload") or {}
+        if payload.get("event") == "oep_reached":
+            on_oep_reached(payload)
+            return
+        spike = payload.get("spike")
+        if spike in ("stage1", "stage2"):
+            LOG.info("guard %s %s %s", spike, payload.get("event"),
+                     payload.get("detail"))
+        elif spike:
+            LOG.info("guard %s %s", spike,
+                     json.dumps(payload, default=str)[:400])
+
+    return handler
 
 
 def find_license_file(pe_path: Path) -> Optional[Path]:
@@ -202,63 +302,28 @@ def _windows_nt_path(path: Path) -> str:
     return absolute
 
 
-def _on_message(message: Dict[str, Any], _data: Any) -> None:
-    if message.get("type") == "error":
-        LOG.error("guard agent error: %s", message.get("description"))
-        LOG.debug("%s", message.get("stack"))
-        return
-    if message.get("type") != "send":
-        return
-    payload = message.get("payload") or {}
-    spike = payload.get("spike")
-    if spike in ("stage1", "stage2"):
-        LOG.info("guard %s %s %s", spike, payload.get("event"),
-                 payload.get("detail"))
-    elif spike:
-        LOG.info("guard %s %s", spike, json.dumps(payload, default=str)[:400])
+def arm(script: frida.core.Script, pe_path: Path) -> bool:
+    """Point the guard at the licence, start it, install the handler.
 
-
-def install(session: frida.core.Session, pe_path: Path) -> Optional[Any]:
-    """Load the guard agent into an existing session.
-
-    Returns the script so the caller can arm tracing after resuming, or ``None``
-    when the guard is disabled or has nothing to work with.
+    Never raises.  Returns True when the guard is armed; any failure leaves the
+    run behaving as it did before the guard existed -- an OEP timeout at worst --
+    rather than hanging until the runner's hard kill.
     """
-    if not guard_enabled():
-        return None
-    _say(f"enabled; looking for a licence next to {pe_path.name}")
     licence = find_license_file(pe_path)
     if licence is None:
         _say("no licence file found; the protection will reject the run")
-        return None
+        return False
     try:
         head_hex = licence.read_bytes()[:HEAD_LEN].hex()
     except OSError as exc:
         _say(f"cannot read {licence}: {exc}")
-        return None
+        return False
     rsa_keys = find_rsa_keys(pe_path)
     # No keys is not an error while identityKey is on: the agent then builds its
     # own (exponent 1), which is what makes the decrypt the identity. The CI
     # spike2 runs show exactly that (keys-materialised ... identityKey=true with
-    # no regkey.rsa present), so warning about it here only misleads.
-    source = _agent_source()
-    _say(f"loading agent ({len(source)} bytes)")
-
-    def _load() -> Any:
-        created = session.create_script(source)
-        created.on("message", _on_message)
-        created.load()
-        return created
-
-    # Bounded, and non-fatal: if the agent cannot be loaded the run should behave
-    # exactly as it did before the guard existed (an OEP timeout at worst), not
-    # hang until the runner's hard kill.
-    try:
-        script = _rpc_with_timeout(_load, 90.0, "guard script load")
-    except Exception as exc:  # noqa: BLE001
-        _say(f"could not load the guard agent ({exc}); continuing without it")
-        return None
-    _say("agent loaded; calling setup")
+    # no regkey.rsa present).
+    _say(f"arming: licence={licence} head={head_hex}")
     try:
         _rpc_with_timeout(
             lambda: script.exports_sync.
@@ -280,15 +345,19 @@ def install(session: frida.core.Session, pe_path: Path) -> Optional[Any]:
             }),
             60.0,
             "guard setup")
+        # Only now: setup() is what assigns the guard's callback, and the combined
+        # handler has to be installed after both halves exist.
+        _rpc_with_timeout(
+            lambda: script.exports_sync.install_exception_handler(), 30.0,
+            "install_exception_handler")
     except Exception as exc:  # noqa: BLE001
         _say(f"guard setup failed ({exc}); continuing without it")
-        return None
-    _say(f"armed: licence={licence} head={head_hex} "
-         f"rsaKeys={'yes' if rsa_keys else 'no'}")
-    return script
+        return False
+    _say("armed (one script, one exception handler)")
+    return True
 
 
-def start_tracing(script: Any) -> None:
+def start_tracing(script: Optional[frida.core.Script]) -> None:
     """Arm Stalker once the process is running.  Never raises, never blocks."""
     if script is None:
         return
