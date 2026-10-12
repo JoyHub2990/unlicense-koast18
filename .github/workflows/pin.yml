@@ -104,9 +104,15 @@ jobs:
         run: |
           # The top-level project declares only Pin 3.26|Win32 and Pin 3.27+|Win32,
           # so /p:Platform=x64 fails with MSB8013. Duplicate the Win32 blocks as
-          # x64 before building.
-          python scripts\inject_pin_x64.py pin\source\tools\whatlicense\wl-extract.vcxproj
+          # x64 before building. The PIN root is passed so the script can look up
+          # the x64 names of the per-architecture CRT include directories instead
+          # of carrying the IA-32 ones (which is what produced the uintptr_t and
+          # stlport char_traits errors on the first attempt).
+          python scripts\inject_pin_x64.py pin\source\tools\whatlicense\wl-extract.vcxproj pin
           if ($LASTEXITCODE -ne 0) { throw "could not add the x64 configuration" }
+          Write-Host "--- extras\crt\include ---"
+          Get-ChildItem pin\extras\crt\include -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "  $($_.Name)" }
           Select-String -Path pin\source\tools\whatlicense\wl-extract.vcxproj `
             -Pattern 'Pin 3.27\+\|x64' | Select-Object -First 3 |
             ForEach-Object { Write-Host $_.Line.Trim() }

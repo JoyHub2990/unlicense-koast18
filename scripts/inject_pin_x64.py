@@ -48,19 +48,50 @@ SQ = chr(39)
 COND = SQ + "$(Configuration)|$(Platform)" + SQ + "==" + SQ + WIN32 + SQ
 
 
-def to_x64(block: str) -> str:
+def to_x64(block: str, arch: dict) -> str:
     out = block.replace(WIN32, X64)
     out = out.replace("..\\..\\..\\ia32\\", "..\\..\\..\\intel64\\")
     out = out.replace("TARGET_IA32;HOST_IA32", "TARGET_IA32E;HOST_IA32E")
     out = out.replace("__i386__", "_WIN64")
+    for old, new in arch.items():
+        out = out.replace(old, new)
     return out
+
+
+def x64_arch_dirs(pin_root: Path) -> dict:
+    """PIN ships one CRT/asm include set per target architecture.
+
+    The Win32 blocks point at arch-x86 / asm-x86; building x64 with those gives
+    MSVC's vadefs.h and PIN's crt headers disagreeing about uintptr_t, and the
+    stlport headers fail behind that. Look up the x64 names in the kit rather than
+    guessing them.
+    """
+    picks = {}
+    crt = pin_root / "extras" / "crt" / "include"
+    if crt.is_dir():
+        for entry in sorted(crt.iterdir()):
+            if entry.is_dir() and entry.name.startswith("arch-") and "86_64" in entry.name:
+                picks["arch-x86"] = entry.name
+                break
+    uapi = crt / "kernel" / "uapi"
+    if uapi.is_dir():
+        for entry in sorted(uapi.iterdir()):
+            if entry.is_dir() and entry.name.startswith("asm-") and "86_64" in entry.name:
+                picks["asm-x86"] = entry.name
+                break
+    return picks
 
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: inject_pin_x64.py <wl-extract.vcxproj>")
+        print("usage: inject_pin_x64.py <wl-extract.vcxproj> [pin_root]")
         return 2
     path = Path(sys.argv[1])
+    pin_root = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+    arch = {}
+    if pin_root is not None and pin_root.is_dir():
+        arch = x64_arch_dirs(pin_root)
+        print("x64 arch dirs: %s" % (arch or "none found"))
     text = path.read_text(encoding="utf-8", errors="replace")
 
     if X64 in text:
@@ -75,7 +106,7 @@ def main() -> int:
     if anchor not in text:
         print("ProjectConfigurations entry not found")
         return 1
-    text = text.replace(anchor, anchor + to_x64(anchor), 1)
+    text = text.replace(anchor, anchor + to_x64(anchor, arch), 1)
 
     # 2. Every block conditioned on the Win32 configuration: the PropertyGroup,
     #    the ImportGroup and the ItemDefinitionGroup.
@@ -89,7 +120,7 @@ def main() -> int:
         nonlocal count
         count += 1
         whole = match.group(0)
-        return whole + to_x64(whole)
+        return whole + to_x64(whole, arch)
 
     text = pattern.sub(add, text)
     if count == 0:
