@@ -385,6 +385,9 @@ function stage2ArmOne(start, length) {
     const pageSize = Process.pageSize;
     const old = Memory.alloc(4);
     let armed = 0;
+    const pages = Math.ceil(length / pageSize);
+    stage2Log("arm-one", "start=" + start + " length=0x" + length.toString(16) +
+        " pages=" + pages);
     for (let offset = 0; offset < length; offset += pageSize) {
         try {
             if (getVirtualProtect()(start.add(offset), pageSize,
@@ -395,6 +398,14 @@ function stage2ArmOne(start, length) {
             /* this page cannot be guarded; keep the rest */
         }
     }
+    /* Report the return, not just the entry.  Round 25 logged stage2 start and
+     * then nothing at all -- no armed, no following-now, none of the heartbeats
+     * that follow it -- which means the deferred callback never got past
+     * stage2ArmGuard.  The loop is a handful of pages, so "it is slow" does not
+     * explain it; a fault storm does: arming a page the protection is actively
+     * polling re-enters the exception handler (which disarms and re-arms) faster
+     * than the JS thread can finish the loop. */
+    stage2Log("arm-one-done", "start=" + start + " armed=" + armed + "/" + pages);
     return armed;
 }
 
@@ -414,12 +425,16 @@ function stage2DisarmOne(start, length) {
 function stage2ArmGuard() {
     const s2 = stage2State();
     let armed = 0;
+    stage2Log("arm-begin", "guard1=" + s2.guardStart + "+0x" +
+        s2.guardLength.toString(16) + " guard2=" + s2.guardStart2 + "+0x" +
+        s2.guardLength2.toString(16));
     if (s2.guardStart !== null && s2.guardLength > 0) {
         armed += stage2ArmOne(s2.guardStart, s2.guardLength);
     }
     if (s2.guardStart2 !== null && s2.guardLength2 > 0) {
         armed += stage2ArmOne(s2.guardStart2, s2.guardLength2);
     }
+    stage2Log("arm-end", "armed=" + armed);
     return armed > 0;
 }
 
@@ -843,6 +858,18 @@ function stage2OnGuardAccess(details) {
     const s2 = plan.stage2;
     if (s2 === undefined || !s2.active || s2.guardStart === null) {
         return false;
+    }
+    /* Count every entry, before any early return, and report the first few and
+     * then sparsely.  If arming a page the protection polls produces a fault
+     * storm, this counter is what shows it: the handler disarms and re-arms per
+     * fault, so a storm keeps the JS thread inside the handler and stage2ArmGuard
+     * never returns (round 25: stage2 start, then no armed, no following-now, no
+     * heartbeats). */
+    s2.faults = (s2.faults || 0) + 1;
+    if (s2.faults <= 5 || s2.faults % 200 === 0) {
+        stage2Log("guard-fault", "#" + s2.faults + " " +
+            (details.memory ? details.memory.operation : "?") + "@" +
+            (details.memory ? details.memory.address : "?"));
     }
     const memory = details.memory || null;
     let address = null;
