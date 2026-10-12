@@ -1684,7 +1684,23 @@ function installWindowsHooks() {
                          * same code path by hand to avoid re-entrancy. */
                         plan.tracing = true;
                         followStart = Date.now();
-                        for (const thread of Process.enumerateThreads()) {
+                        /* Trace the main thread only.
+                         *
+                         * Stalker with a JS transform runs a JS callback per
+                         * instruction, and this loop followed every thread in the
+                         * process (threads=5). Rounds 30 and 31 ran identical
+                         * code and differed only in whether the JS thread could
+                         * still service timers: round 30 produced cmp-site 49 and
+                         * the +5.5s status line, round 31 produced 200 scan-ticks
+                         * and not one timer callback. Per-instruction callouts
+                         * across five threads saturate the JS thread; the licence
+                         * check runs on the thread that maps the licence. */
+                        const candidates = plan.mainThread === undefined
+                            ? Process.enumerateThreads()
+                            : Process.enumerateThreads().filter(function (t) {
+                                return t.id === plan.mainThread;
+                            });
+                        for (const thread of candidates) {
                             try {
                                 Stalker.follow(thread.id,
                                                { transform: install });
@@ -1857,7 +1873,23 @@ function installLinuxHooks() {
                          * same code path by hand to avoid re-entrancy. */
                         plan.tracing = true;
                         followStart = Date.now();
-                        for (const thread of Process.enumerateThreads()) {
+                        /* Trace the main thread only.
+                         *
+                         * Stalker with a JS transform runs a JS callback per
+                         * instruction, and this loop followed every thread in the
+                         * process (threads=5). Rounds 30 and 31 ran identical
+                         * code and differed only in whether the JS thread could
+                         * still service timers: round 30 produced cmp-site 49 and
+                         * the +5.5s status line, round 31 produced 200 scan-ticks
+                         * and not one timer callback. Per-instruction callouts
+                         * across five threads saturate the JS thread; the licence
+                         * check runs on the thread that maps the licence. */
+                        const candidates = plan.mainThread === undefined
+                            ? Process.enumerateThreads()
+                            : Process.enumerateThreads().filter(function (t) {
+                                return t.id === plan.mainThread;
+                            });
+                        for (const thread of candidates) {
                             try {
                                 Stalker.follow(thread.id,
                                                { transform: install });
