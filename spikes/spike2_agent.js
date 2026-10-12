@@ -1177,6 +1177,22 @@ function stage2ApplyCmp(context, site) {
     }
     const regVal = found.value.and(0xffff).toUInt32();
 
+    /* Log before deciding.
+     *
+     * Round 41 put the zero-check first, so every site that was refused vanished
+     * from the log as well and the round reported zero cmp-site lines for the
+     * real samples -- indistinguishable from "no comparison executed". The log
+     * must not be gated by the match logic; report the site, then apply the
+     * rules. */
+    s2.cmpSites = (s2.cmpSites || 0) + 1;
+    if (s2.cmpSites <= 10) {
+        stage2Log("cmp-site", "#" + s2.cmpSites + " pc=" + site.address +
+            " mem[" + base + "]=0x" + memVal.toString(16) + " " + regName +
+            "=0x" + regVal.toString(16) + " ours=0x" +
+            s2.hash3.toString(16) + " match=" +
+            (memVal === s2.hash3 || regVal === s2.hash3));
+    }
+
     /* Never key the match on zero.
      *
      * Round 40 reached stage2 complete on a real sample three times, but every
@@ -1198,22 +1214,6 @@ function stage2ApplyCmp(context, site) {
     }
 
     s2.cmpCandidates++;
-    /* Log every site's operands, not just the matches.
-     *
-     * Round 38 finally had the right hash_3 (0x6501) and still reported no
-     * cmp-candidate at all, so the question is whether the protection executes a
-     * comparison against that value in the first place. Logging only matches
-     * cannot answer it: no output is ambiguous between "the comparison never
-     * runs" (the protection gave up on the decrypted plaintext before checking)
-     * and "it runs but the operands are shaped differently than assumed". */
-    s2.cmpSites = (s2.cmpSites || 0) + 1;
-    if (s2.cmpSites <= 10) {
-        stage2Log("cmp-site", "#" + s2.cmpSites + " pc=" + site.address +
-            " mem[" + base + "]=0x" + memVal.toString(16) + " " + regName +
-            "=0x" + regVal.toString(16) + " ours=0x" +
-            s2.hash3.toString(16) + " match=" +
-            (memVal === s2.hash3 || regVal === s2.hash3));
-    }
     if (s2.cmpCandidates <= 4) {
         stage2Log("cmp-candidate", "pc=" + site.address + " mem[" + base +
             "]=0x" + memVal.toString(16) + " " + regName + "=0x" +
