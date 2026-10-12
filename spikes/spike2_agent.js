@@ -813,6 +813,28 @@ function startStage2(decLic) {
             s2.sub = 2;
             stage2Log("following-now", "window opened without the guard");
             setTimeout(stage2FollowThreads, 0);
+            /* Heartbeat. The window's own summary (cmp-not-found) only prints
+             * when the window closes, so a round that is cut short shows
+             * following-now and nothing after it -- which reads the same whether
+             * the matcher ran and found nothing or never ran at all. Round 23
+             * opened the window three times and reported no summary, leaving
+             * exactly that ambiguity. */
+            setTimeout(function () {
+                stage2Log("status", "hash3=0x" + (s2.hash3 || 0).toString(16) +
+                    " decLicBuf=" + s2.decLicBuf + " decLic=" + s2.decLic +
+                    " sub=" + s2.sub + " cmpSites=" + (s2.cmpSites || 0) +
+                    " cmpCandidates=" + (s2.cmpCandidates || 0) +
+                    " applyNoOurs=" + (s2.applyNoOurs || 0) +
+                    " memShapes=" + (s2.memShapes || 0) +
+                    " guardHits=" + (s2.hits || 0));
+            }, 3000);
+            setTimeout(function () {
+                stage2Log("status-late", "hash3=0x" + (s2.hash3 || 0).toString(16) +
+                    " sub=" + s2.sub + " cmpSites=" + (s2.cmpSites || 0) +
+                    " cmpCandidates=" + (s2.cmpCandidates || 0) +
+                    " applyNoOurs=" + (s2.applyNoOurs || 0) +
+                    " memShapes=" + (s2.memShapes || 0));
+            }, 12000);
         }
     }, 0);
 }
@@ -936,15 +958,22 @@ function stage2OnGuardAccess(details) {
     stage2Log("hash3-read", "pc=" + (ctx === null ? "?" : ctx[PC_REG]) +
         " offset=0x" + offset.toString(16) + " value=" + value +
         " exact=" + exact + " hits=" + s2.hits);
-    /* Re-read hash_3 now, at the landmark. startStage2 read dec_lic + 0x33
-     * before anything had written it, so it captured 0 and the comparison
-     * could never match "ours" -- the candidate log showed
-     * mem[eax]=0x3730 dx=0xbeef ours=0x0, i.e. both real operands were read
-     * correctly and the reference value was the only thing wrong. */
+    /* hash_3 is a field of the licence -- buffer + 0x33 -- not whatever word the
+     * protection happens to load inside the buffer.
+     *
+     * Taking the read value unconditionally let a zero word inside the licence
+     * clobber the reference: round 23 logged hash3=0x6501 at stage2 start, then
+     * every cmp-site showed ours=0x0, and the zero-guard (correctly) refused
+     * every match. Adopt the read only when it is non-zero and we have nothing
+     * better; otherwise keep the value taken from the field. */
+    let read = null;
     try {
-        s2.hash3 = address.readU16();
+        read = address.readU16();
     } catch (e) {
-        /* keep whatever start time captured */
+        /* keep whatever startStage2 captured */
+    }
+    if (read !== null && read !== 0 && !s2.hash3) {
+        s2.hash3 = read;
     }
     s2.sub = 2;
     stage2DisarmGuard();
@@ -1186,11 +1215,20 @@ function stage2ApplyCmp(context, site) {
      * rules. */
     s2.cmpSites = (s2.cmpSites || 0) + 1;
     if (s2.cmpSites <= 10) {
+        /* Report where the reference value comes from, not just what it is.
+         *
+         * Every cmp-site in the unpacker showed ours=0x0 while stage2 start had
+         * logged hash3=0x6501, so the reference value is being lost between
+         * startStage2 and the first comparison. Without the source -- decLicBuf
+         * set or not, which sub-stage we are in -- there is no way to tell which
+         * of the two places that set s2.hash3 did it. */
         stage2Log("cmp-site", "#" + s2.cmpSites + " pc=" + site.address +
             " mem[" + base + "]=0x" + memVal.toString(16) + " " + regName +
             "=0x" + regVal.toString(16) + " ours=0x" +
             s2.hash3.toString(16) + " match=" +
-            (memVal === s2.hash3 || regVal === s2.hash3));
+            (memVal === s2.hash3 || regVal === s2.hash3) +
+            " sub=" + s2.sub + " decLicBuf=" + s2.decLicBuf +
+            " decLic=" + s2.decLic);
     }
 
     /* Never key the match on zero.
