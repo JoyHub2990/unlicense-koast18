@@ -10,6 +10,7 @@ import frida.core
 from .process_control import (ProcessController, Architecture, MemoryRange,
                               QueryProcessMemoryError, ReadProcessMemoryError,
                               WriteProcessMemoryError)
+from . import license_guard
 
 LOG = logging.getLogger(__name__)
 # See issue #7: messages cannot exceed 128MiB
@@ -182,7 +183,17 @@ def spawn_and_instrument(
                                                 script)
     frida_rpc.setup_oep_tracing(pe_path.name, [[r.base, r.size]
                                                for r in text_section_ranges])
+    # Neutralize the licence protection in this same process, before resuming.
+    #
+    # The OEP is only reachable if the licence is accepted: on a real protected
+    # sample the protection refuses to let the unpacked image run, so the OEP
+    # never fires and the run dies with rc=4 (OEP timeout). See
+    # unlicense-handoff.md section 9.29. Both agents must live in one session for
+    # that reason -- a separate run cannot help.
+    guard_script = license_guard.install(session, pe_path)
     frida.resume(pid)
+    # Stalker only takes effect on a running thread.
+    license_guard.start_tracing(guard_script)
 
     return process_controller
 
