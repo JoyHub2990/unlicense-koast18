@@ -156,6 +156,9 @@ function hwBreakInstall(plan, addresses) {
             ok = hwBreakApplyToThread(thread.id, targets, true);
         } catch (e) {
             ok = false;
+            if (reasons.length < 3) {
+                reasons.push("threw: " + String(e));
+            }
         }
         if (ok) {
             applied++;
@@ -163,7 +166,7 @@ function hwBreakInstall(plan, addresses) {
         } else {
             failed++;
             if (reasons.length < 3) {
-                reasons.push(hwBreakApplyToThread.lastError || "unknown");
+                reasons.push(hwBreakApplyToThread.lastError || "returned false");
             }
         }
     }
