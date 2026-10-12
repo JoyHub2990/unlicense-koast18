@@ -73,13 +73,13 @@ def _rpc_with_timeout(call: Any, seconds: float, what: str) -> Any:
         raise box["error"]
     return box.get("value")
 
+
 # The agent compares this many leading bytes of the mapped licence.
 HEAD_LEN = 8
 
 # Where the agent lives.  It is the same file the spike2 harness loads, so the
 # two cannot drift apart.
 _AGENT_NAME = "spike2_agent.js"
-
 
 # The agent is not one file.  Frida evaluates a single source string, so the
 # helper module is inlined ahead of the main agent -- the same order
@@ -165,8 +165,12 @@ def _read_rsa_keys(path: Path) -> Optional[Dict[str, Any]]:
         return None
     if len(data) < 4:
         return None
-    lengths = {"mod1": data[0], "exp1": data[1], "mod2": data[2],
-               "exp2": data[3]}
+    lengths = {
+        "mod1": data[0],
+        "exp1": data[1],
+        "mod2": data[2],
+        "exp2": data[3]
+    }
     offset = 4
     keys: Dict[str, Any] = {}
     for name, length in lengths.items():
@@ -211,8 +215,7 @@ def _on_message(message: Dict[str, Any], _data: Any) -> None:
         LOG.info("guard %s %s %s", spike, payload.get("event"),
                  payload.get("detail"))
     elif spike:
-        LOG.info("guard %s %s", spike,
-                 json.dumps(payload, default=str)[:400])
+        LOG.info("guard %s %s", spike, json.dumps(payload, default=str)[:400])
 
 
 def install(session: frida.core.Session, pe_path: Path) -> Optional[Any]:
@@ -257,22 +260,26 @@ def install(session: frida.core.Session, pe_path: Path) -> Optional[Any]:
         return None
     _say("agent loaded; calling setup")
     try:
-        _rpc_with_timeout(lambda: script.exports_sync.setup({
-            "headHex": head_hex,
-            "ntPath": _windows_nt_path(licence),
-            "licenseFile": str(licence),
-            "licSize": licence.stat().st_size,
-            "rsaKeys": rsa_keys,
-            # The protection unpacks at native speed unless tracing is deferred.
-            "deferTracing": True,
-            # A real sample calls the RSA routine once; whatlicense's model needs
-            # dec_sections + 1.
-            "stage1CompleteAfter": 1,
-            # An exponent of 1 makes the protection's decrypt the identity, so the
-            # decrypted buffer is the licence blob itself instead of a lottery.
-            "identityKey": True,
-            "guardSpan": 0x4000,
-        }), 60.0, "guard setup")
+        _rpc_with_timeout(
+            lambda: script.exports_sync.
+            setup({
+                "headHex": head_hex,
+                "ntPath": _windows_nt_path(licence),
+                "licenseFile": str(licence),
+                "licSize": licence.stat().st_size,
+                "rsaKeys": rsa_keys,
+                # The protection unpacks at native speed unless tracing is deferred.
+                "deferTracing": True,
+                # A real sample calls the RSA routine once; whatlicense's model needs
+                # dec_sections + 1.
+                "stage1CompleteAfter": 1,
+                # An exponent of 1 makes the protection's decrypt the identity, so the
+                # decrypted buffer is the licence blob itself instead of a lottery.
+                "identityKey": True,
+                "guardSpan": 0x4000,
+            }),
+            60.0,
+            "guard setup")
     except Exception as exc:  # noqa: BLE001
         _say(f"guard setup failed ({exc}); continuing without it")
         return None
@@ -286,9 +293,8 @@ def start_tracing(script: Any) -> None:
     if script is None:
         return
     try:
-        result = _rpc_with_timeout(
-            lambda: script.exports_sync.start_tracing(), 30.0,
-            "guard start_tracing")
+        result = _rpc_with_timeout(lambda: script.exports_sync.start_tracing(),
+                                   30.0, "guard start_tracing")
         _say(f"tracing: {result}")
     except Exception as exc:  # noqa: BLE001
         _say(f"start_tracing failed: {exc}")
