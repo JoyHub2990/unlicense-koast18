@@ -81,37 +81,55 @@ HEAD_LEN = 8
 _AGENT_NAME = "spike2_agent.js"
 
 
+# The agent is not one file.  Frida evaluates a single source string, so the
+# helper module is inlined ahead of the main agent -- the same order
+# spikes/run_spike2.py uses.  spike2_agent.js calls hwBreakOnException, which
+# hwbreak_agent.js defines; loading spike2_agent.js alone left the identifier
+# undefined and the exception handler threw ReferenceError on its first
+# exception, so Stage 1's guard-page path and Stage 2's guard never ran. The
+# guarded CI run said so exactly:
+#   guard stage1 exception-handler-error ReferenceError: 'hwBreakOnException' is not defined
+_AGENT_MODULES = ("hwbreak_agent.js", "spike2_agent.js")
+
+
 def guard_enabled() -> bool:
     return os.environ.get("UNLICENSE_GUARD") == "1"
 
 
-def _agent_source() -> str:
-    """Read the guard agent.
-
-    The package is installed into site-packages, so ``Path(__file__).parent``
-    there has no ``spikes/`` next to it: the first guarded CI run died with
-    FileNotFoundError for exactly that reason.  Honour an explicit path first --
-    run_unpack.py passes the checkout's copy -- then the package resource, then
-    the checkout.
-    """
+def _agent_dirs() -> "list[Path]":
+    """Where to look for the agent modules, most specific first."""
+    dirs = []
     override = os.environ.get("UNLICENSE_GUARD_AGENT")
     if override:
-        path = Path(override)
-        if path.is_file():
-            return path.read_text()
-        raise FileNotFoundError(f"UNLICENSE_GUARD_AGENT={override} is not a file")
-    try:
-        from importlib import resources
-        return resources.open_text("unlicense.resources", _AGENT_NAME).read()
-    except (FileNotFoundError, ModuleNotFoundError):
-        pass
-    # Fall back to the checkout: this is a research tree, not a wheel.
-    path = Path(__file__).resolve().parent.parent / "spikes" / _AGENT_NAME
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"guard agent not found: tried package resource {_AGENT_NAME!r}, "
-            f"{path}, and UNLICENSE_GUARD_AGENT is unset")
-    return path.read_text()
+        dirs.append(Path(override).resolve().parent)
+    # Installed package (poetry ships files that live inside the package).
+    dirs.append(Path(__file__).resolve().parent / "resources")
+    # A checkout: this is a research tree, not always a wheel.
+    dirs.append(Path(__file__).resolve().parent.parent / "spikes")
+    return dirs
+
+
+def _agent_source() -> str:
+    """Concatenate the agent modules into one script.
+
+    The first guarded CI run died with FileNotFoundError because the package is
+    installed into site-packages, where ``Path(__file__).parent.parent`` has no
+    ``spikes/`` beside it; UNLICENSE_GUARD_AGENT (set by run_unpack.py) is
+    honoured first for that reason.
+    """
+    dirs = _agent_dirs()
+    parts = []
+    for name in _AGENT_MODULES:
+        for directory in dirs:
+            candidate = directory / name
+            if candidate.is_file():
+                parts.append(candidate.read_text())
+                break
+        else:
+            raise FileNotFoundError(
+                f"guard agent module {name!r} not found in "
+                f"{[str(d) for d in dirs]}")
+    return "\n".join(parts)
 
 
 def find_license_file(pe_path: Path) -> Optional[Path]:
