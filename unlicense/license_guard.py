@@ -58,9 +58,15 @@ HEAD_LEN = 8
 _GUARD_MODULES = ("hwbreak_agent.js", "spike2_agent.js")
 
 # How the two halves install their exception handlers, and how the guard declares
-# its exports.  Rewriting these at load time is what lets one script host both.
+# its exports.  The handler calls are wrapped rather than rewritten: replacing
+# `Process.setExceptionHandler(fn)` with `__captureHandler = fn` leaves the call's
+# closing `);` behind and the script fails to parse (script(line 3391):
+# SyntaxError: expecting ';').  Passing the function to a capture shim keeps the
+# parentheses balanced and needs no surgery on the closing brace.
 _GUARD_HANDLER_CALL = "Process.setExceptionHandler(function (details) {"
+_GUARD_HANDLER_WRAP = "__captureGuardHandler(function (details) {"
 _FRIDA_HANDLER_CALL = "Process.setExceptionHandler(exp => {"
+_FRIDA_HANDLER_WRAP = "__captureFridaHandler(exp => {"
 _GUARD_EXPORTS = "rpc.exports = {"
 
 # Appended after both halves are evaluated: one handler, and one exports object.
@@ -73,7 +79,19 @@ _MERGE_TAIL = """
  * returns true) or OEP detection would be disabled by the guard. Keep both
  * callbacks and call the guard's first -- it only claims faults inside its own
  * guarded ranges.
+ *
+ * The two handler call sites above were rewritten to hand their functions to
+ * these shims, so neither half installs a handler itself.  Function declarations
+ * hoist, so they are defined by the time either half calls one.
  */
+function __captureGuardHandler(callback) {
+    __guardExceptionHandler = callback;
+}
+
+function __captureFridaHandler(callback) {
+    __fridaExceptionHandler = callback;
+}
+
 (function () {
     const __fridaExports = rpc.exports || {};
     rpc.exports = Object.assign({}, __fridaExports, __guardRpc, {
@@ -186,16 +204,14 @@ def combined_source() -> str:
                          "merge would leave the guard disarmed")
     if _GUARD_EXPORTS not in guard:
         raise ValueError("guard agent: rpc.exports not found")
-    guard = guard.replace(_GUARD_HANDLER_CALL,
-                          "__guardExceptionHandler = function (details) {", 1)
+    guard = guard.replace(_GUARD_HANDLER_CALL, _GUARD_HANDLER_WRAP, 1)
     guard = guard.replace(_GUARD_EXPORTS, "const __guardRpc = {", 1)
     frida = _read_module("frida.js")
     if _FRIDA_HANDLER_CALL not in frida:
         raise ValueError(
             "frida.js: exception handler call not found; the merge "
             "would leave OEP detection disabled")
-    frida = frida.replace(_FRIDA_HANDLER_CALL,
-                          "__fridaExceptionHandler = exp => {", 1)
+    frida = frida.replace(_FRIDA_HANDLER_CALL, _FRIDA_HANDLER_WRAP, 1)
     return "\n".join([guard, frida, _MERGE_TAIL])
 
 
