@@ -7,6 +7,10 @@ on:
         description: "Manifest(s) to prepare, colon separated (tests/*.list)"
         type: string
         default: "tests/samples.list"
+      guard:
+        description: "1 = neutralize the licence check inside the unpacking session (UNLICENSE_GUARD=1)"
+        type: string
+        default: "0"
   push:
     branches: [main, dev]
     paths:
@@ -22,6 +26,7 @@ concurrency:
 
 env:
   SAMPLES_LISTS: ${{ inputs.samples_lists || 'tests/samples.list' }}
+  UNLICENSE_GUARD: ${{ inputs.guard || '0' }}
 
 jobs:
   unpack:
@@ -72,6 +77,10 @@ jobs:
 
       - name: Stub missing runtime DLLs
         run: python scripts/stub_missing_dlls.py
+
+      - name: Provide a dummy licence next to each sample (guard)
+        if: env.UNLICENSE_GUARD == '1'
+        run: python scripts/make_dummy_licenses.py
 
       - name: Unpack samples
         run: python scripts/run_unpack.py
