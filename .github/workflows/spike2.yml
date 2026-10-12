@@ -58,12 +58,6 @@ on:
         description: "x64 modes: normal,deferred"
         type: string
         default: "normal,deferred"
-  push:
-    branches: [main, dev]
-    paths:
-      - "spikes/**"
-      - ".github/workflows/spike2.yml"
-
 concurrency:
   # Include the event and the run's own configuration: a push-triggered sanity
   # run must not cancel a dispatched real-sample run (and two dispatches with
