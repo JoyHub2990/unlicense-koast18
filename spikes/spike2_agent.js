@@ -427,11 +427,26 @@ function stage2ArmGuard() {
     let armed = 0;
     stage2Log("arm-begin", "guard1=" + s2.guardStart + "+0x" +
         s2.guardLength.toString(16) + " guard2=" + s2.guardStart2 + "+0x" +
-        s2.guardLength2.toString(16));
+        s2.guardLength2.toString(16) + " armBuffer=" + (s2.armBufferGuard === true));
     if (s2.guardStart !== null && s2.guardLength > 0) {
         armed += stage2ArmOne(s2.guardStart, s2.guardLength);
     }
-    if (s2.guardStart2 !== null && s2.guardLength2 > 0) {
+    /* The buffer guard is opt-in, and off by default.
+     *
+     * Round 27 armed both ranges on six completions.  The dec_lic page
+     * (guard1 = 0x14f000) armed 1/1 every single time; the licence buffer page
+     * (guard2 = 0x6ae000) armed on three and on the other three the attempt
+     * simply ended inside its first VirtualProtect -- and not one guard-fault
+     * line was emitted, so the exception handler never ran: the fault that
+     * arming that page provokes takes the process down before the message is
+     * delivered.
+     *
+     * Nothing needs it any more.  hash_3 is read straight from the buffer
+     * (bufHash3=0x6501, stable across addresses) and the comparison window opens
+     * without the guard, so the only thing the buffer guard still does is kill
+     * half the attempts that get this far. */
+    if (s2.armBufferGuard === true && s2.guardStart2 !== null &&
+        s2.guardLength2 > 0) {
         armed += stage2ArmOne(s2.guardStart2, s2.guardLength2);
     }
     stage2Log("arm-end", "armed=" + armed);
