@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -157,6 +158,20 @@ def _say(message: str) -> None:
     print("license_guard: " + message, flush=True)
 
 
+# When the current attempt armed, for stamping agent events.  The runner buffers
+# a child's output and flushes it at the end of the attempt, so every line in the
+# CI log carries the same timestamp and "how long into the window did the
+# protection read the licence" cannot be measured from it.  That number decides
+# whether to run a few long attempts or many short ones, so measure it here.
+_armed_at: Optional[float] = None
+
+
+def _elapsed() -> str:
+    if _armed_at is None:
+        return "+   ?s"
+    return f"+{time.monotonic() - _armed_at:6.1f}s"
+
+
 def _rpc_with_timeout(call: Callable[[], Any], seconds: float,
                       what: str) -> Any:
     """Run an RPC with a deadline.
@@ -260,10 +275,10 @@ def message_handler(
             return
         spike = payload.get("spike")
         if spike in ("stage1", "stage2"):
-            LOG.info("guard %s %s %s", spike, payload.get("event"),
-                     payload.get("detail"))
+            LOG.info("guard %s %s %s %s", _elapsed(), spike,
+                     payload.get("event"), payload.get("detail"))
         elif spike:
-            LOG.info("guard %s %s", spike,
+            LOG.info("guard %s %s %s", _elapsed(), spike,
                      json.dumps(payload, default=str)[:400])
 
     return handler
@@ -356,10 +371,16 @@ def arm(script: frida.core.Script, pe_path: Path) -> bool:
         _say(f"cannot read {licence}: {exc}")
         return False
     rsa_keys = find_rsa_keys(pe_path)
-    # No keys is not an error while identityKey is on: the agent then builds its
-    # own (exponent 1), which is what makes the decrypt the identity. The CI
-    # spike2 runs show exactly that (keys-materialised ... identityKey=true with
-    # no regkey.rsa present).
+    global _armed_at
+    _armed_at = time.monotonic()
+    # rsa_keys may legitimately be None here, but Stage 1 then cannot identify the
+    # protection's mp_exptmod call -- it matches that call's arguments against
+    # these keys and reports "sub4-no-key-match ... rsaKeys=null matches=0" -- so
+    # the keys are a hard requirement, not an optimisation. unpack.yml builds them
+    # with wl-lic and places regkey.rsa next to each sample for this reason.
+    if rsa_keys is None:
+        _say(f"no RSA keys beside {pe_path.name}: Stage 1 cannot match the "
+             f"protection's mp_exptmod call and will not complete")
     _say(f"arming: licence={licence} head={head_hex}")
     try:
         _rpc_with_timeout(
