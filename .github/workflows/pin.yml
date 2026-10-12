@@ -181,9 +181,21 @@ jobs:
           Write-Host "running: $pin -t $ext -d regkey.dat -r regkey.rsa -o $log -- $target"
           $out = Join-Path $root 'pin_stdout.txt'
           $err = Join-Path $root 'pin_stderr.txt'
+          # Every path handed to PIN is quoted.
+          #
+          # Start-Process joins -ArgumentList with spaces and does not quote the
+          # elements, and the x64 tool lives in "x64\Pin 3.27+\wl-extract.dll" --
+          # a directory with a space in it. Unquoted, PIN was told the tool was
+          # "...\x64\Pin" and answered "Invalid tool DLL name", exit -1, no log.
+          # The x86 build never hit this because "...\bin\wl-extract.dll" has no
+          # space in it.
+          $q = [char]34
+          $qExt = $q + $ext + $q
+          $qLog = $q + $log + $q
+          $qTarget = $q + (Join-Path (Get-Location).Path $target) + $q
           $p = Start-Process -FilePath $pin `
-            -ArgumentList @('-t', $ext, '-d', 'regkey.dat', '-r', 'regkey.rsa',
-                            '-o', $log, '--', (Join-Path (Get-Location).Path $target)) `
+            -ArgumentList @('-t', $qExt, '-d', 'regkey.dat', '-r', 'regkey.rsa',
+                            '-o', $qLog, '--', $qTarget) `
             -NoNewWindow -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err
           $deadline = [int]"${{ inputs.timeout_s }}"
