@@ -35,9 +35,9 @@ _GUARD = os.environ.get("UNLICENSE_GUARD") == "1"
 # one attempt in nine, so the useful lever is attempts, not a long window: a short
 # attempt buys several chances for the wall clock of one long one.
 PER_SAMPLE_TIMEOUT = int(
-    os.environ.get("UNLICENSE_SAMPLE_TIMEOUT_S", "90" if _GUARD else "420"))
+    os.environ.get("UNLICENSE_SAMPLE_TIMEOUT_S", "60" if _GUARD else "420"))
 UNLICENSE_OEP_TIMEOUT = int(
-    os.environ.get("UNLICENSE_OEP_TIMEOUT_S", "60" if _GUARD else "120"))
+    os.environ.get("UNLICENSE_OEP_TIMEOUT_S", "45" if _GUARD else "120"))
 
 
 def interpreter_bitness() -> str:
@@ -47,7 +47,8 @@ def interpreter_bitness() -> str:
 
 
 def kill_tree(proc: subprocess.Popen) -> None:
-    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+    subprocess.run(["taskkill", "/F", "/T", "/PID",
+                    str(proc.pid)],
                    capture_output=True)
 
 
@@ -71,11 +72,19 @@ def run_one(pe_rel: str) -> dict:
     # bug. mkdir without it raised FileExistsError and lost the whole sample.
     workdir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [sys.executable, "-m", "unlicense", str(pe),
-           "--timeout", str(UNLICENSE_OEP_TIMEOUT)]
+    cmd = [
+        sys.executable, "-m", "unlicense",
+        str(pe), "--timeout",
+        str(UNLICENSE_OEP_TIMEOUT)
+    ]
     start = time.time()
-    result = {"status": "FAIL", "rc": -1, "seconds": 0.0,
-              "dumps": [], "tail": []}
+    result = {
+        "status": "FAIL",
+        "rc": -1,
+        "seconds": 0.0,
+        "dumps": [],
+        "tail": []
+    }
     # Send the child's output straight to a file rather than a pipe.
     #
     # The first guarded run died on the hard kill with rc=-1 and the exception
@@ -92,9 +101,13 @@ def run_one(pe_rel: str) -> dict:
             agent = ROOT / "spikes" / "spike2_agent.js"
             if agent.is_file():
                 child_env["UNLICENSE_GUARD_AGENT"] = str(agent)
-            proc = subprocess.Popen(cmd, cwd=workdir, stdout=log,
-                                    stderr=subprocess.STDOUT, text=True,
-                                    errors="replace", bufsize=1,
+            proc = subprocess.Popen(cmd,
+                                    cwd=workdir,
+                                    stdout=log,
+                                    stderr=subprocess.STDOUT,
+                                    text=True,
+                                    errors="replace",
+                                    bufsize=1,
                                     env=child_env)
             try:
                 proc.wait(timeout=PER_SAMPLE_TIMEOUT)
@@ -108,8 +121,10 @@ def run_one(pe_rel: str) -> dict:
         rc = proc.returncode
         out = log_path.read_text(encoding="utf-8", errors="replace")
         log_lines = out.splitlines()
-        dumps = [d for d in workdir.glob("unpacked_*")
-                 if d.is_file() and d.stat().st_size > 1024]
+        dumps = [
+            d for d in workdir.glob("unpacked_*")
+            if d.is_file() and d.stat().st_size > 1024
+        ]
 
         if dumps:
             status = "OK"
@@ -141,18 +156,25 @@ def run_one(pe_rel: str) -> dict:
         # arrive after start, so a tail-only window would drop the setup and a
         # head-only one would drop the answer).
         tail = (guard_lines[:4] + guard_lines[-14:] + log_lines[-4:])[-22:]
-        result = {"status": status, "rc": rc,
-                  "seconds": round(time.time() - start, 1),
-                  "dumps": [d.name for d in dumps],
-                  "tail": tail}
+        result = {
+            "status": status,
+            "rc": rc,
+            "seconds": round(time.time() - start, 1),
+            "dumps": [d.name for d in dumps],
+            "tail": tail
+        }
         out_dir = RESULTS / "unpacked"
         out_dir.mkdir(exist_ok=True)
         for d in dumps:
             shutil.copy(d, out_dir / f"{label}_{d.name}")
     except Exception as exc:  # noqa: BLE001
-        result = {"status": "ERROR", "rc": -1,
-                  "seconds": round(time.time() - start, 1),
-                  "dumps": [], "tail": [f"runner exception: {exc}"]}
+        result = {
+            "status": "ERROR",
+            "rc": -1,
+            "seconds": round(time.time() - start, 1),
+            "dumps": [],
+            "tail": [f"runner exception: {exc}"]
+        }
     return result
 
 
@@ -167,18 +189,29 @@ def main() -> int:
     for entry in manifest:
         label = entry["label"]
         if not entry["downloaded"] or not entry["pes"]:
-            rows.append({"label": label, "pe": "-", "arch": "-",
-                         "version": "-", "status": entry["status"],
-                         "rc": "-", "seconds": 0, "tail": []})
+            rows.append({
+                "label": label,
+                "pe": "-",
+                "arch": "-",
+                "version": "-",
+                "status": entry["status"],
+                "rc": "-",
+                "seconds": 0,
+                "tail": []
+            })
             continue
         for pe_info in select_targets(entry):
             if pe_info["arch"] != bitness:
-                rows.append({"label": label,
-                             "pe": Path(pe_info["path"]).name,
-                             "arch": pe_info["arch"] or "?",
-                             "version": pe_info["version"],
-                             "status": "SKIP_ARCH", "rc": "-",
-                             "seconds": 0, "tail": []})
+                rows.append({
+                    "label": label,
+                    "pe": Path(pe_info["path"]).name,
+                    "arch": pe_info["arch"] or "?",
+                    "version": pe_info["version"],
+                    "status": "SKIP_ARCH",
+                    "rc": "-",
+                    "seconds": 0,
+                    "tail": []
+                })
                 continue
             # Repeat when the guard is on.
             #
@@ -192,15 +225,23 @@ def main() -> int:
             if os.environ.get("UNLICENSE_GUARD") == "1":
                 attempts = max(
                     1, int(os.environ.get("UNLICENSE_GUARD_ATTEMPTS", "8")))
-            res = {"status": "FAIL", "rc": -1, "seconds": 0.0, "dumps": [],
-                   "tail": []}
+            res = {
+                "status": "FAIL",
+                "rc": -1,
+                "seconds": 0.0,
+                "dumps": [],
+                "tail": []
+            }
             for attempt in range(1, attempts + 1):
-                print(f"[{label}] running {pe_info['path']} "
-                      f"(v{pe_info['version']}) attempt {attempt}/{attempts} ...",
-                      flush=True)
+                print(
+                    f"[{label}] running {pe_info['path']} "
+                    f"(v{pe_info['version']}) attempt {attempt}/{attempts} ...",
+                    flush=True)
                 res = run_one(pe_info["path"])
-                print(f"[{label}] -> {res['status']} rc={res['rc']} "
-                      f"{res['seconds']}s dumps={res['dumps']}", flush=True)
+                print(
+                    f"[{label}] -> {res['status']} rc={res['rc']} "
+                    f"{res['seconds']}s dumps={res['dumps']}",
+                    flush=True)
                 for line in res.get("tail", []):
                     print(f"[{label}]   {line}", flush=True)
                 # Retry while there is no dump. The "OEP not reached" outcome
@@ -213,19 +254,28 @@ def main() -> int:
                     break
             if res["status"] in ("FAIL", "ERROR"):
                 has_bad = True
-            rows.append({"label": label, "pe": Path(pe_info["path"]).name,
-                         "arch": pe_info["arch"], "version": pe_info["version"],
-                         **res})
+            rows.append({
+                "label": label,
+                "pe": Path(pe_info["path"]).name,
+                "arch": pe_info["arch"],
+                "version": pe_info["version"],
+                **res
+            })
 
-    report = {"bitness": bitness, "rows": rows,
-              "ok": sum(1 for r in rows if r["status"] == "OK"),
-              "fail": sum(1 for r in rows
-                          if r["status"] in ("FAIL", "ERROR"))}
-    (RESULTS / f"report_{bitness}.json").write_text(json.dumps(report, indent=2))
+    report = {
+        "bitness": bitness,
+        "rows": rows,
+        "ok": sum(1 for r in rows if r["status"] == "OK"),
+        "fail": sum(1 for r in rows if r["status"] in ("FAIL", "ERROR"))
+    }
+    (RESULTS / f"report_{bitness}.json").write_text(
+        json.dumps(report, indent=2))
 
-    md = [f"## Unpack report (python {bitness})", "",
-          "| sample | PE | ver | status | rc | sec | tail |",
-          "|---|---|---|---|---|---|---|"]
+    md = [
+        f"## Unpack report (python {bitness})", "",
+        "| sample | PE | ver | status | rc | sec | tail |",
+        "|---|---|---|---|---|---|---|"
+    ]
     for r in rows:
         tail = " / ".join(t.strip() for t in r.get("tail", [])[-2:])[:160]
         tail = tail.replace("|", "\\|").replace("\r", " ")

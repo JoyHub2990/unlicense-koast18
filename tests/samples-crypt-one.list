@@ -1,0 +1,11 @@
+# One sample at a time, deliberately.
+#
+# crypt.zip's three x64 samples each complete Stage 1 on roughly one attempt in
+# ten, and everything worth measuring (arming, the Stalker window, the OEP) only
+# happens after that. Spreading a fixed CI budget over three samples buys a third
+# of the completions of concentrating it on one -- so this manifest carries the
+# primary executable alone. Widen back to tests/samples-crypt.list once this one
+# reaches the OEP and produces a dump.
+#
+# LABEL<TAB>SOURCE<TAB>NOTES
+ngahost	samples/dl/NgaHost.exe	winlicense x64 + flexlm (single-target manifest)
