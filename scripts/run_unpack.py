@@ -64,7 +64,11 @@ def run_one(pe_rel: str) -> dict:
     workdir = RUNS / label
     if workdir.exists():
         shutil.rmtree(workdir, ignore_errors=True)
-    workdir.mkdir(parents=True)
+    # exist_ok: rmtree above ignores errors by design (a file may still be locked
+    # by the previous attempt's process), and the retry loop now runs a sample
+    # several times in a row, so a leftover directory is normal rather than a
+    # bug. mkdir without it raised FileExistsError and lost the whole sample.
+    workdir.mkdir(parents=True, exist_ok=True)
 
     cmd = [sys.executable, "-m", "unlicense", str(pe),
            "--timeout", str(UNLICENSE_OEP_TIMEOUT)]
