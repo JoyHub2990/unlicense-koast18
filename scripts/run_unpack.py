@@ -169,7 +169,7 @@ def main() -> int:
             attempts = 1
             if os.environ.get("UNLICENSE_GUARD") == "1":
                 attempts = max(
-                    1, int(os.environ.get("UNLICENSE_GUARD_ATTEMPTS", "3")))
+                    1, int(os.environ.get("UNLICENSE_GUARD_ATTEMPTS", "4")))
             res = {"status": "FAIL", "rc": -1, "seconds": 0.0, "dumps": [],
                    "tail": []}
             for attempt in range(1, attempts + 1):
@@ -181,9 +181,13 @@ def main() -> int:
                       f"{res['seconds']}s dumps={res['dumps']}", flush=True)
                 for line in res.get("tail", []):
                     print(f"[{label}]   {line}", flush=True)
-                # rc=4 is unlicense's "OEP not reached" -- the one outcome worth
-                # another attempt. A crash or a dump means stop.
-                if res["dumps"] or res["rc"] != 4:
+                # Retry while there is no dump. The "OEP not reached" outcome
+                # surfaces two ways: rc=4 (unlicense exits after its own timeout)
+                # and rc=1 with frida.InvalidOperationError: script has been
+                # destroyed (the timeout path terminated the process and the
+                # next RPC then failed). Keying on rc=4 alone stopped retrying
+                # after the first attempt in round 9 for exactly that reason.
+                if res["dumps"]:
                     break
             if res["status"] in ("FAIL", "ERROR"):
                 has_bad = True
