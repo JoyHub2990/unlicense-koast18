@@ -74,7 +74,31 @@ jobs:
       - name: Stub missing runtime DLLs
         run: python scripts/stub_missing_dlls.py
 
-      - name: Provide a dummy licence next to each sample (guard)
+      # wl-lic is not part of the unlicense fork; it is the whatlicense author's
+      # standalone tool.  The guard needs its output twice over: the dummy licence
+      # to redirect the protection's read to, and the RSA keys Stage 1 matches the
+      # protection's mp_exptmod arguments against.  Without the keys the matcher
+      # reports sub4-no-key-match ... rsaKeys=null and Stage 1 never completes.
+      - name: Fetch whatlicense (wl-lic sources)
+        if: env.UNLICENSE_GUARD == '1'
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/ret2vibec/whatlicense.git whatlicense
+          if (-not (Test-Path whatlicense\wl-lic\main.cpp)) {
+            Write-Host "clone did not produce wl-lic, trying codeload"
+            curl.exe -sL -o wl.tgz https://codeload.github.com/ret2vibec/whatlicense/tar.gz/refs/heads/main
+            New-Item -ItemType Directory -Force -Path whatlicense | Out-Null
+            tar.exe xzf wl.tgz --strip-components=1 -C whatlicense
+          }
+          if (-not (Test-Path whatlicense\wl-lic\main.cpp)) { throw "wl-lic sources unavailable" }
+
+      - name: Build wl-lic and generate the dummy license
+        if: env.UNLICENSE_GUARD == '1'
+        env:
+          WLIC_DIR: ${{ github.workspace }}\whatlicense
+        run: python spikes/build_wl_lic.py
+
+      - name: Place the dummy licence and keys next to each sample (guard)
         if: env.UNLICENSE_GUARD == '1'
         run: python scripts/make_dummy_licenses.py
 
