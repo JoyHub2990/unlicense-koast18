@@ -3550,6 +3550,22 @@ function stage1TakeLandmark(snapshot, label) {
                     }
                 }
 
+                /* Only hook addresses that parse as instructions.
+                 *
+                 * Round 81 refused 22 hooks with "unable to intercept function at
+                 * 0x1401cefec; please file a bug" and the ranges were already rwx, so
+                 * this is not a permission problem: Frida's relocator failed. The
+                 * candidates come from stack slots, and a stack slot can hold a data
+                 * pointer that merely happens to land inside the code range. Parsing
+                 * one instruction is cheap and drops those before they cost a hook. */
+                try {
+                    Instruction.parse(address);
+                } catch (e) {
+                    stage1Log("sub2-hook-skip", address +
+                        " does not parse as code: " + String(e));
+                    return;
+                }
+
                 plan.hooks.push(Interceptor.attach(address, {
                     onEnter: function () {
                         try {

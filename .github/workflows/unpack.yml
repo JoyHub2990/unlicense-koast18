@@ -19,6 +19,14 @@ on:
         description: "Attempts per sample when the guard is on (each is a full run)"
         type: string
         default: "8"
+      oep_timeout_s:
+        description: "Seconds to wait for the OEP in each attempt (diagnostics want this short)"
+        type: string
+        default: "45"
+      per_sample_timeout_s:
+        description: "Hard cap per sample, seconds"
+        type: string
+        default: "90"
       no_trace:
         description: "1 = diagnostic: do not attach the map-time Stalker transform (tests whether its hundredfold slowdown is what the protection reacts to)"
         type: string
@@ -38,6 +46,14 @@ env:
   UNLICENSE_GUARD_SKIP_OEP: ${{ inputs.skip_oep || '0' }}
   UNLICENSE_GUARD_ATTEMPTS: ${{ inputs.attempts || '8' }}
   UNLICENSE_GUARD_NO_TRACE: ${{ inputs.no_trace || '0' }}
+  # Bound the feedback loop.
+  #
+  # These were hard-coded in run_unpack.py, so every diagnostic round cost the full
+  # 45s-per-attempt x N attempts even when the very first attempt had already shown
+  # what the round was there to show. A diagnostic run wants a handful of attempts
+  # and a short OEP window; only a validation run needs the long ones.
+  UNLICENSE_OEP_TIMEOUT_S: ${{ inputs.oep_timeout_s || '45' }}
+  PER_SAMPLE_TIMEOUT_S: ${{ inputs.per_sample_timeout_s || '90' }}
 
 jobs:
   unpack:
