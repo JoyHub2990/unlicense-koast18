@@ -3077,27 +3077,15 @@ function stage1OpenWindow() {
     emit({ spike: "stage1", event: "window-open", threads: followed,
            detail: "bounded tracing from the licence read" });
     setTimeout(function () {
-        /* Extend while Stage 1 is still pending.
+        /* No extension.
          *
-         * The completion rate is the thing to fix now: rounds 53-55 completed
-         * Stage 1 in roughly one attempt in four. sub2-reject shows why -- we hook
-         * candidate call sites and scan for the swap destination when one returns
-         * into the RSA routine; if the right candidate has not had its turn by the
-         * time the window closes, the chance is gone. The RSA step happens before
-         * the protection verifies anything, so holding the window open a little
-         * longer costs nothing that matters. */
-        const s1 = plan.stage1;
-        const pending = s1 !== undefined && s1.active === true &&
-            plan.stage1Complete !== true && s1.sub !== 6;
-        const extensions = plan.stage1WindowExtensions || 0;
-        if (pending && extensions < 3) {
-            plan.stage1WindowExtensions = extensions + 1;
-            emit({ spike: "stage1", event: "window-extend",
-                   extensions: extensions + 1,
-                   detail: "Stage 1 still pending; keeping the window open" });
-            stage1OpenWindow();
-            return;
-        }
+         * Round 57 tried holding the window open in six-second steps while Stage 1
+         * was pending, and it made things worse in exactly the way round 51
+         * described: window-extend 56, and the protection's licence reads fell from
+         * 46 to 4. Keeping the target slowed is what stops the protection working,
+         * so the window has to close on schedule and let the run continue. The rate
+         * of Stage 1 landmarks has to be improved inside a short window, not by
+         * making the window long. */
         let stopped = 0;
         for (const thread of Process.enumerateThreads()) {
             try {
