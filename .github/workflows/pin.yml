@@ -86,7 +86,7 @@ jobs:
       - name: Put whatlicense in the PIN tools directory
         shell: pwsh
         run: |
-          git clone --depth 1 https://github.com/ret2vibec/whatlicense.git whatlicense-src
+          git clone --depth 1 https://github.com/koast18/whatlicense.git whatlicense-src
           $dst = "pin\source\tools\whatlicense"
           New-Item -ItemType Directory -Force -Path $dst | Out-Null
           Copy-Item -Recurse -Force whatlicense-src\* $dst\
