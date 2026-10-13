@@ -3066,6 +3066,31 @@ function stage1IsExecutable(address) {
     }
 }
 
+/* Is this address the instruction after a call?
+ *
+ * A return address sits immediately after a call, so scanning back a few bytes must
+ * find one: E8 (call rel32, 5 bytes) or FF with modrm.reg == 2 (call r/m, 2 bytes, or
+ * with a SIB/disp, still within 15). This is the check Instruction.parse cannot make,
+ * and it is what separates a genuine resume point from a stack value that happens to
+ * point into executable memory. */
+function stage1IsReturnAddress(address) {
+    let offset = 1;
+    while (offset <= 15) {
+        let start = address.sub(offset);
+        try {
+            const insn = Instruction.parse(start);
+            if (insn.mnemonic === "call") {
+                return true;
+            }
+        } catch (e) {
+            /* Unreadable before the address: stop looking. */
+            return false;
+        }
+        offset++;
+    }
+    return false;
+}
+
 function stage1RankCandidates(snapshot) {
     const slots = [];
     const pc = snapshot.pc;
@@ -3543,6 +3568,36 @@ function stage1TakeLandmark(snapshot, label) {
     const usable = candidates.filter(function (candidate) {
         return candidate.inModule;
     }).slice(0, 6);
+
+    /* Of those, keep only the ones that are actually return addresses.
+     *
+     * Round 84/85's hwbreak events list candidates such as 0x1401c7000 -- page
+     * aligned, repeated across runs, and almost certainly a data pointer that merely
+     * lands in a readable executable range. Instruction.parse accepts any readable
+     * memory, so it cannot tell a pointer from code; what a return address actually
+     * means is "the instruction after a call", and that is decidable by looking
+     * backwards: a call rel32 (E8) is 5 bytes and a call r/m (FF /2) is 2, so within
+     * 15 bytes there must be one. This is the difference between hooking the caller's
+     * resume point and hooking whatever the stack happened to hold. */
+    const returnAddresses = usable.filter(function (candidate) {
+        return stage1IsReturnAddress(ptr(candidate.value));
+    });
+    const dropped = usable.length - returnAddresses.length;
+    if (dropped > 0) {
+        stage1Log("sub1-not-return-address", dropped + " of " + usable.length +
+            " candidates are not preceded by a call: " +
+            usable.filter(function (candidate) {
+                return !stage1IsReturnAddress(ptr(candidate.value));
+            }).map(function (candidate) {
+                return candidate.value;
+            }).join(","));
+    }
+    const hookable = returnAddresses.length > 0 ? returnAddresses : usable;
+    if (hookable !== usable) {
+        stage1Log("sub1-hookable", hookable.length + " real return addresses of " +
+            usable.length);
+    }
+
     if (usable.length === 0) {
         const stats = stage1RankCandidates.lastStats || {};
         stage1Log("sub1-no-code-return-candidate",
@@ -3559,7 +3614,7 @@ function stage1TakeLandmark(snapshot, label) {
     stage1.retCandidatesInModule = usable.map(function (candidate) {
         return stage1CandidateLabel(candidate) + "=" + candidate.value;
     });
-    for (const candidate of usable) {
+    for (const candidate of hookable) {
         const address = ptr(candidate.value);
         const slotLabel = stage1CandidateLabel(candidate);
         setTimeout(function () {
@@ -3634,7 +3689,7 @@ function stage1TakeLandmark(snapshot, label) {
      * CPU reports the pc the moment one of these addresses is reached. Four debug
      * registers, so the first four candidates -- the ranking already puts the
      * plausible callers first. */
-    const hwCandidates = usable.slice(0, 4).map(function (candidate) {
+    const hwCandidates = hookable.slice(0, 4).map(function (candidate) {
         return candidate.value;
     });
     if (hwCandidates.length > 0) {
