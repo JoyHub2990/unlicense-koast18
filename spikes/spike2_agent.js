@@ -909,15 +909,33 @@ function stage2ArmHash3Monitor() {
         }, {
             onAccess: function (details) {
                 s2.hash3Reads = (s2.hash3Reads || 0) + 1;
+                /* MemoryAccessMonitor is page-granular, so reads of anything else
+                 * sharing the page arrive here too -- round 53's first hit was
+                 * read@0x58d478 from ntdll, not the licence field at 0x58dd83.
+                 * whatlicense's find_hash_read is an exact address test
+                 * (ea == dec_lic + 0x33) and size 2; keep that rule and only
+                 * report the rest as collateral. */
+                const exact = details.address.compare(s2.hash3Address) >= 0 &&
+                    details.address.compare(s2.hash3Address.add(2)) < 0;
+                if (!exact) {
+                    s2.hash3Collateral = (s2.hash3Collateral || 0) + 1;
+                    if (s2.hash3Collateral <= 4) {
+                        stage2Log("monitor-collateral",
+                            "read@" + details.address + " from " +
+                            details.from + " (not the hash_3 field)");
+                    }
+                    return;
+                }
                 stage2Log("monitor-hit", "#" + s2.hash3Reads + " " +
                     details.operation + "@" + details.address + " from " +
                     details.from + " pc=" + details.context[PC_REG] +
                     " ours=0x" + s2.hash3.toString(16));
-                if (s2.hash3Reads === 1) {
+                if (s2.hash3Hits !== true) {
                     /* The protection is about to compare. Open the window for the
                      * comparison only -- whatlicense notes WL pushes and pops the
                      * value a few times first, so it is not the read instruction
                      * itself that does the comparing. */
+                    s2.hash3Hits = true;
                     s2.sub = 2;
                     setTimeout(stage2FollowThreads, 0);
                 }
