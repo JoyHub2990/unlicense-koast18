@@ -121,14 +121,26 @@ function hwBreakApis() {
             "uint32", ["pointer"]),
         GetThreadContext: new NativeFunction(hwBreakExport("GetThreadContext"),
             "int", ["pointer", "pointer"]),
-        SetThreadContext: new NativeFunction(hwBreakExport("SetThreadContext"),
-            "int", ["pointer", "pointer"]),
+        /* Same reason as NtSetContextThread below: the real implementation is in
+         * KernelBase on modern Windows, and kernel32's entry is a forwarder. */
+        SetThreadContext: new NativeFunction(
+            Module.getExportByName("KernelBase.dll", "SetThreadContext"), "int",
+            ["pointer", "pointer"]),
         /* SetThreadContext resolves to something that is not callable in this
          * process (round 37/38: "TypeError: not a function" at the call site,
          * while OpenThread from the same helper is fine). NtSetContextThread is
          * the ntdll function it forwards to; NTSTATUS 0 means success. */
+        /* NtSetContextThread must come from ntdll by name.
+         *
+         * The multi-module helper takes the first module that exports the name, and
+         * these two are exactly the ones where that is wrong: kernel32/KernelBase
+         * carry forwarder stubs for them, so the address handed to NativeFunction is
+         * not code and every call throws "TypeError: not a function" -- which is what
+         * round 84's hwbreak event reports for both SetThreadContext and
+         * NtSetContextThread, on every thread, while OpenThread from the same helper
+         * resolves and works. Ask ntdll for the real entry point. */
         NtSetContextThread: new NativeFunction(
-            hwBreakExport("NtSetContextThread"), "int32",
+            Module.getExportByName("ntdll.dll", "NtSetContextThread"), "int32",
             ["pointer", "pointer"]),
         GetLastError: new NativeFunction(hwBreakExport("GetLastError"),
             "uint32", [])
