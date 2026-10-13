@@ -2409,7 +2409,7 @@ function stage1BackInRsaExptmod(context) {
      * "0 direct calls in the function" -- a real rsa_exptmod always contains
      * the direct call to mp_exptmod. Reject and stay in sub-stage 2 so the next
      * hooked candidate gets its turn. */
-    const destinations = stage1ScanCalls(ptr(stage1.retToRsa));
+    const destinations = stage1ScanCalls(ptr(stage1.retToRsa), false);
     if (destinations.length === 0) {
         stage1.rejectedCandidates = (stage1.rejectedCandidates || 0) + 1;
         stage1Log("sub2-reject", "pc=" + context[PC_REG] + " retToRsa=" +
@@ -2498,7 +2498,7 @@ function stage1BackInRsaExptmod(context) {
 /* Parse forward from `fromAddress`, collecting the destinations of direct
  * (E8) calls -- the PIN original takes the next executed call; scanning and
  * then fingerprinting the arguments is both cheaper and less fragile. */
-function stage1ScanCalls(fromAddress) {
+function stage1ScanCalls(fromAddress, stopAtRet) {
     const destinations = [];
     let address = fromAddress;
     for (let i = 0; i < 4000; i++) {
@@ -2508,7 +2508,16 @@ function stage1ScanCalls(fromAddress) {
         } catch (e) {
             break;
         }
-        if (insn.mnemonic === "ret" || insn.mnemonic === "retf") {
+        /* Stopping at the first ret is right when scanning a whole function from
+         * its entry, and wrong here: the validation below starts at a candidate's
+         * *return* address, which usually lands part-way into rsa_exptmod, so the
+         * scan hits a ret belonging to an inner block long before it reaches the
+         * mp_exptmod call. Round 60 rejected 400+ candidates for exactly this
+         * reason ("no direct calls -- not rsa_exptmod"). The real filter is the
+         * arguments of each call (looksLikeKeyMpInt), so extra destinations from
+         * scanning on are harmless; pass stopAtRet=false to keep going. */
+        if ((stopAtRet !== false) &&
+            (insn.mnemonic === "ret" || insn.mnemonic === "retf")) {
             break;
         }
         if (insn.mnemonic === "call") {
