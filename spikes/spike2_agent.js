@@ -3139,6 +3139,13 @@ function stage1OpenWindow() {
     }
     emit({ spike: "stage1", event: "window-open", threads: followed,
            detail: "bounded tracing from the licence read" });
+    /* Two seconds, not six.
+     *
+     * Round 65 measured what the window costs: across 21 attempts the protection
+     * read the licence page exactly once (guard-hit 1), so six seconds of slowdown
+     * per attempt was suppressing the very event everything downstream depends on.
+     * The RSA call appeared 1.8-2.5s in when tracing ran from map time, so two
+     * seconds still covers it while leaving the target alone for the rest. */
     setTimeout(function () {
         /* No extension.
          *
@@ -3165,7 +3172,7 @@ function stage1OpenWindow() {
         }
         emit({ spike: "stage1", event: "window-close", threads: stopped,
                detail: "bounded window over; target back to full speed" });
-    }, 6000);
+    }, 2000);
 }
 
 function stage1OnLicensePageAccess(details) {
