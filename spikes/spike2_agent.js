@@ -722,6 +722,37 @@ function stage2LocateBufferByContent() {
     stage2Log("buf-scan", "hits=" + hits.length + " scanned=0x" +
         scanned.toString(16) + " at=" +
         hits.map(function (a) { return a.toString(); }).join(","));
+    if (hits.length === 0 && s2.decLic !== null && s2.decLic !== undefined) {
+        /* The global sweep is unreliable here: round 61 reported scanned=0x0,
+         * i.e. every candidate range either exceeded the size cap or failed to
+         * scan, and Stage 2 armed its monitor on a garbage address (bufHash3
+         * unreadable) that could never be hit.
+         *
+         * dec_lic is the RSA output, and under the identity key that output is
+         * the licence bytes themselves, so the range holding dec_lic is where the
+         * decrypted buffer must be. Scan just that one -- one range, no cap, no
+         * dependence on how the process happens to lay out its heaps. */
+        try {
+            const owner = Process.findRangeByAddress(s2.decLic);
+            if (owner !== null) {
+                stage2Log("buf-scan-anchor", "scanning the dec_lic range " +
+                    owner.base + "+0x" + owner.size.toString(16) + " (" +
+                    owner.protection + ")");
+                const found = Memory.scanSync(owner.base, owner.size, pattern);
+                for (let j = 0; j < found.length && hits.length < 6; j++) {
+                    const at = found[j].address;
+                    if (at.compare(copy) >= 0 &&
+                        at.compare(copy.add(0x2000)) < 0) {
+                        continue;
+                    }
+                    hits.push(at);
+                }
+                stage2Log("buf-scan-anchor", "hits=" + hits.length);
+            }
+        } catch (e) {
+            stage2Log("buf-scan-anchor", "failed: " + String(e));
+        }
+    }
     if (hits.length === 0) {
         return;
     }
