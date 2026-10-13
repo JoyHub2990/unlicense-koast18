@@ -2611,7 +2611,36 @@ function stage1BackInRsaExptmod(context) {
         destinations.slice(0, 12).map(function (address) {
             return address.toString();
         }).join(" "));
-    for (const destination of destinations) {
+    /* Hook each destination once, and cap how many an attempt may attach.
+     *
+     * Round 94's state-machine log answered the question it was added to ask, and the
+     * answer was not re-entry: sub2-entry fires once per attempt (sub=2, hooks=17,
+     * rejected=0). What actually costs the attempt its 60s is the volume --
+     * sub3-call-candidates 4 against sub3-hooked-sync 119, so about thirty Interceptor
+     * hooks per scan, on top of the seventeen candidate hooks already attached. Hundreds
+     * of trampolines inside the protection's own code slow it enough that the hooks
+     * never get to fire (no sub4-no-key-match, no keys-materialised, no key-monitor-armed)
+     * and the attempt dies on the timeout instead.
+     *
+     * The destinations repeat between scans because the same function gets scanned more
+     * than once, so dedupe by address and keep a hard ceiling. The RSA call is
+     * recognised by its arguments, so hooking every destination is not required to find
+     * it -- the ones that matter are reached within the first scan. */
+    if (stage1.hookedAddresses === undefined) {
+        stage1.hookedAddresses = {};
+    }
+    const fresh = destinations.filter(function (address) {
+        return stage1.hookedAddresses[address.toString()] !== true;
+    });
+    const room = Math.max(0, 40 - plan.hooks.length);
+    const toHook = fresh.slice(0, room);
+    if (toHook.length < destinations.length) {
+        stage1Log("sub3-hook-dedupe", destinations.length + " destinations, " +
+            fresh.length + " new, hooking " + toHook.length +
+            " (already attached " + plan.hooks.length + ")");
+    }
+    for (const destination of toHook) {
+        stage1.hookedAddresses[destination.toString()] = true;
         /* Attach synchronously. The original wrapped this in
          * setTimeout(..., 0), which is the wrong tool here: we are inside an
          * Interceptor onEnter on the target thread (not a Stalker callout and
