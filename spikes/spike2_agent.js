@@ -3479,8 +3479,21 @@ function startStage1(licCopy) {
          * hit is the protection reading the licence, which it can only do after
          * the RSA step, so the call Stage 1 needs had already happened. The
          * licence copy being resolved and the guard being armed is the earliest
-         * point at which we know the protection is about to work on the licence. */
-        if (plan.noTrace && plan.stage1WindowOpened !== true) {
+         * point at which we know the protection is about to work on the licence.
+         *
+         * Under noTrace, do not open it at all.
+         *
+         * The transform is not what finds the RSA call: the guard page supplies the
+         * landmark and its exception context, stage1RankCandidates picks the return
+         * addresses out of that stack, and Interceptor.attach -- one trampoline per
+         * function, not a callback per instruction -- waits for the call. The
+         * transform only makes everything a hundredfold slower, and a slowed target
+         * is what the protection reacts to by skipping its licence work (rounds 51
+         * and 57). So in the mode that exists to keep the target fast, keep it fast. */
+        if (plan.noTrace) {
+            stage1Log("window-skipped",
+                "noTrace: guard page + Interceptor carry Stage 1; no transform");
+        } else if (plan.stage1WindowOpened !== true) {
             plan.stage1WindowOpened = true;
             stage1OpenWindow();
         }
