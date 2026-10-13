@@ -3243,7 +3243,19 @@ function stage1OnLicensePageAccess(details) {
      * exception-handler-error logged). */
     const snapshot = stage1CaptureLandmark(ctx);
     setTimeout(function () {
-        stage1TakeLandmark(snapshot, "op=" + operation + " addr=" + address);
+        /* Round 58: the target dies right after sub1-landmark-module (rc=1 with no
+         * dumps, the same symptom the note above records from run 38042084163), and
+         * take-landmark/sub2/call-watch never appear. Log each phase so the next run
+         * says which one kills it instead of leaving it to inference. */
+        try {
+            stage1Log("take-landmark-begin", "pc=" + snapshot.pc);
+            stage1TakeLandmark(snapshot, "op=" + operation + " addr=" + address);
+            stage1Log("take-landmark-end", "sub=" + stage1.sub);
+        } catch (e) {
+            stage1Log("take-landmark-error", String(e) +
+                (e !== null && e !== undefined && e.stack !== undefined
+                    ? " | " + e.stack : ""));
+        }
     }, 0);
     return true;
 }
