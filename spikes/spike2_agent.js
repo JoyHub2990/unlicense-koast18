@@ -2046,8 +2046,52 @@ function installLinuxHooks() {
 
 /* Search the recorded candidates for the address that now holds the license
  * head — the same test the PIN tool runs after the unmap. */
+/* Find the licence copy by its content, with no help from the transform.
+ *
+ * The byte-wise write tracking that fills plan.copySet only exists because the
+ * transform sees every instruction. With UNLICENSE_GUARD_NO_TRACE the set is
+ * empty and Stage 0 cannot resolve at all (round 50: no lic_copy, no guard, no
+ * Stage 1). The licence head is known from setup, so scan for it instead -- the
+ * same trick stage2LocateBufferByContent already uses for the decrypted buffer. */
+function scanForHead() {
+    const hits = [];
+    let ranges = [];
+    try {
+        ranges = Process.enumerateRanges("rw-");
+    } catch (e) {
+        return hits;
+    }
+    const pattern = plan.head
+        .map(function (byte) {
+            return byte.toString(16).padStart(2, "0");
+        })
+        .join(" ");
+    for (let i = 0; i < ranges.length && hits.length < 8; i++) {
+        const range = ranges[i];
+        if (range.size > 0x4000000) {
+            continue;
+        }
+        try {
+            const found = Memory.scanSync(range.base, range.size, pattern);
+            for (let j = 0; j < found.length && hits.length < 8; j++) {
+                hits.push(found[j].address.toString());
+            }
+        } catch (e) {
+            /* unreadable range */
+        }
+    }
+    return hits;
+}
+
 function resolveCopy(unmappedAddress, via) {
-    const candidates = Object.keys(plan.copySet);
+    let candidates = Object.keys(plan.copySet);
+    if (candidates.length === 0) {
+        emit({ spike: "copy-scan", event: "no-tracked-candidates" });
+        candidates = scanForHead();
+        emit({ spike: "copy-scan", event: "content-hits",
+               count: candidates.length,
+               hits: candidates.slice(0, 4) });
+    }
     report.candidates = candidates.length;
     report.unmapped = unmappedAddress;
     for (const candidate of candidates) {
