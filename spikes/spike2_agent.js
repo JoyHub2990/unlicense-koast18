@@ -806,6 +806,19 @@ function startStage2(decLic) {
     } catch (e) {
         s2.decLicBuf = null;
     }
+    /* Nothing resolved from the struct: go and find the buffer.
+     *
+     * Round 62 completed Stage 1 end to end (landmark, sub2, sub3, sub4, swap) and
+     * then reported buf=null with no buf-scan line at all -- the locator was never
+     * called on this path, so neither the sweep nor the dec_lic-range fallback got
+     * a chance to run, and Stage 2 armed nothing. */
+    if (s2.decLicBuf === null) {
+        try {
+            stage2LocateBufferByContent();
+        } catch (e) {
+            stage2Log("buf-locate-failed", String(e));
+        }
+    }
     /* Take hash_3 from the *buffer*, not from the struct.
      *
      * dec_lic is the mp_int struct (used/alloc/sign at 0,4,8 and dp at 0x10), so
