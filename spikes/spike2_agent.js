@@ -3527,6 +3527,29 @@ function stage1TakeLandmark(snapshot, label) {
         const slotLabel = stage1CandidateLabel(candidate);
         setTimeout(function () {
             try {
+                /* Check the region before attaching.
+                 *
+                 * Round 80 got 141 candidates hooked but 25 refusals with "unable to
+                 * intercept function at 0x1404c7816; please file a bug" -- addresses
+                 * inside NgaHost.exe's image, in the region the protection unpacked
+                 * for itself. Interceptor needs to place a trampoline, so a page that
+                 * is not writable (or not marked executable) makes it give up.
+                 * Report what the range looks like, and make it writable+executable
+                 * before retrying. */
+                const range = Process.findRangeByAddress(address);
+                if (range === null) {
+                    stage1Log("sub2-hook-range", address + " is not in a mapped range");
+                } else if (range.protection.indexOf("x") < 0 ||
+                    range.protection.indexOf("w") < 0) {
+                    stage1Log("sub2-hook-range", address + " protection=" +
+                        range.protection + " -- re-protecting rwx");
+                    try {
+                        Memory.protect(range.base, range.size, "rwx");
+                    } catch (e) {
+                        stage1Log("sub2-hook-protect-failed", String(e));
+                    }
+                }
+
                 plan.hooks.push(Interceptor.attach(address, {
                     onEnter: function () {
                         try {
