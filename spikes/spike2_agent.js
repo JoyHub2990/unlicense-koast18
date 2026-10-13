@@ -2610,47 +2610,68 @@ function stage1BackInRsaExptmod(context) {
  * (E8) calls -- the PIN original takes the next executed call; scanning and
  * then fingerprinting the arguments is both cheaper and less fragile. */
 function stage1ScanCalls(fromAddress, stopAtRet) {
+    /* Scan the candidate itself first, and only follow a thunk if that finds nothing.
+     *
+     * Round 91 shows why the order matters: candidates 0x7ffd24e3c94d and
+     * 0x7ffd24e3bf5a are genuine return addresses that happen to sit on a `jmp` thunk,
+     * and following it lands in 0x7ffd24e11108 -- a region with no direct call in 4000
+     * instructions, so every attempt was rejected (sub2-reject, rejected 1481,
+     * parsed=4000 first=push). A return address is inside the function that called, and
+     * that function is where rsa_exptmod's mp_exptmod call lives; the thunk target is
+     * not necessarily related to it at all. Following the thunk was added in round 78
+     * for a different symptom (first=jmp, then an invalid instruction) and it helps
+     * there, so keep it as the fallback rather than the first move. */
+    const first = stage1ScanRange(fromAddress, stopAtRet);
+    if (first.destinations.length > 0) {
+        stage1ScanCalls.lastParsed = first.parsed;
+        stage1ScanCalls.lastFirst = first.firstMnemonic;
+        stage1ScanCalls.lastError = first.parseError;
+        stage1ScanCalls.lastSource = "candidate";
+        return first.destinations;
+    }
+
+    let address = fromAddress;
+    let target = null;
+    try {
+        const opcode = Memory.readU8(address);
+        if (opcode === 0xE9) {
+            // jmp rel32
+            target = address.add(5).add(Memory.readS32(address.add(1)));
+        } else if (opcode === 0xFF && Memory.readU8(address.add(1)) === 0x25) {
+            // jmp qword ptr [rip + disp32]
+            const disp = Memory.readS32(address.add(2));
+            const slot = address.add(6).add(disp);
+            target = slot.readPointer();
+        }
+    } catch (e) {
+        /* Not a thunk, or unreadable; nothing more to try. */
+    }
+
+    if (target === null || target.isNull()) {
+        stage1ScanCalls.lastParsed = first.parsed;
+        stage1ScanCalls.lastFirst = first.firstMnemonic;
+        stage1ScanCalls.lastError = first.parseError;
+        stage1ScanCalls.lastSource = "candidate";
+        return first.destinations;
+    }
+
+    stage1Log("sub2-thunk-followed", "candidate " + fromAddress +
+        " is a jmp thunk -> " + target + " (candidate scan found no direct call)");
+    const second = stage1ScanRange(target, stopAtRet);
+    stage1ScanCalls.lastParsed = second.parsed;
+    stage1ScanCalls.lastFirst = second.firstMnemonic;
+    stage1ScanCalls.lastError = second.parseError;
+    stage1ScanCalls.lastSource = "thunk";
+    return second.destinations;
+}
+
+/* One linear scan from an address, collecting direct call destinations. */
+function stage1ScanRange(fromAddress, stopAtRet) {
     const destinations = [];
     let address = fromAddress;
     let parsed = 0;
     let firstMnemonic = null;
     let parseError = null;
-
-    /* Follow a jump thunk first.
-     *
-     * Round 78 answered why this scan kept coming back empty: the candidate address
-     * starts with a `jmp` (first=jmp, parsed=111, then an invalid instruction). It is
-     * a thunk, which is what WinLicense's obfuscation produces all over the unpacked
-     * code. Scanning forward from a thunk walks through it into whatever follows and
-     * finds no calls at all, so a function that really is rsa_exptmod gets rejected.
-     *
-     * A thunk's whole purpose is to be followed: resolve the jump and scan the target. */
-    try {
-        const first = Instruction.parse(address);
-
-        if (first.mnemonic === "jmp") {
-            const opcode = Memory.readU8(address);
-            let target = null;
-
-            if (opcode === 0xE9) {
-                // jmp rel32
-                target = address.add(5).add(Memory.readS32(address.add(1)));
-            } else if (opcode === 0xFF && Memory.readU8(address.add(1)) === 0x25) {
-                // jmp qword ptr [rip + disp32]
-                const disp = Memory.readS32(address.add(2));
-                const slot = address.add(6).add(disp);
-                target = slot.readPointer();
-            }
-
-            if (target !== null && !target.isNull()) {
-                stage1Log("sub2-thunk-followed", "candidate " + fromAddress +
-                    " is a jmp thunk -> " + target);
-                address = target;
-            }
-        }
-    } catch (e) {
-        /* Not a thunk, or unreadable; scan from the candidate itself. */
-    }
 
     for (let i = 0; i < 4000; i++) {
         let insn;
@@ -2694,14 +2715,9 @@ function stage1ScanCalls(fromAddress, stopAtRet) {
         }
         address = insn.next;
     }
-    stage1ScanCalls.lastParsed = parsed;
-    stage1ScanCalls.lastFirst = firstMnemonic;
-    stage1ScanCalls.lastError = parseError;
-    return destinations;
+    return { destinations: destinations, parsed: parsed,
+             firstMnemonic: firstMnemonic, parseError: parseError };
 }
-
-/* Does this pointer look like a libtommath mp_int whose digit count matches
- * one of the RSA key components we are about to swap in? */
 function looksLikeKeyMpInt(pointer) {
     if (pointer.isNull()) {
         return null;
