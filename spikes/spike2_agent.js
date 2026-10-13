@@ -3053,7 +3053,7 @@ function stage1OpenWindow() {
         }
         emit({ spike: "stage1", event: "window-close", threads: stopped,
                detail: "bounded window over; target back to full speed" });
-    }, 4000);
+    }, 6000);
 }
 
 function stage1OnLicensePageAccess(details) {
@@ -3100,24 +3100,9 @@ function stage1OnLicensePageAccess(details) {
         stage1Log("guard-hit", "#" + stage1.guardHits + " op=" + operation +
             " addr=" + address + " lic_copy=" + stage1.preRsaBuf);
     }
-    /* Open a bounded tracing window right here.
-     *
-     * Round 51 settled it: with the map-time transform off, the protection reads
-     * the licence page 52 times per run; with it on, zero. The transform costs a
-     * JS callback per instruction, the target runs a hundredfold slower, and that
-     * is what the protection reacts to -- it never verifies and never reaches its
-     * OEP.
-     *
-     * But Stage 1's landmark -- locating the mp_exptmod call -- came from that
-     * same transform. So trace only from the moment the licence is read: the guard
-     * page has just told us the protection is inside its licence code, and in the
-     * transform-on runs the RSA call showed up 1.8-2.5s in. A four-second window
-     * that starts here is the difference between a hundredfold slowdown for the
-     * whole 45s run and for four seconds of it. */
-    if (plan.noTrace && plan.stage1WindowOpened !== true) {
-        plan.stage1WindowOpened = true;
-        stage1OpenWindow();
-    }
+    /* The tracing window is opened when the licence copy is resolved, not here:
+     * this hit is the protection reading the licence, which happens after the RSA
+     * step that Stage 1 needs to see (round 52 caught nothing here). */
     /* The first READ in the guarded page that comes from the main module is
      * the landmark.
      *
@@ -3343,6 +3328,18 @@ function startStage1(licCopy) {
             plan.licSize + " dec_sections=" + stage1.decSections +
             " guard=" + start + "+0x" + length.toString(16) +
             " armed=" + stage1.guardArmed);
+        /* Open the bounded tracing window here, not at the guard hit.
+         *
+         * Round 52 opened it when the guard page reported the licence being read
+         * and caught no mp_exptmod call at all. That is the wrong end: the guard
+         * hit is the protection reading the licence, which it can only do after
+         * the RSA step, so the call Stage 1 needs had already happened. The
+         * licence copy being resolved and the guard being armed is the earliest
+         * point at which we know the protection is about to work on the licence. */
+        if (plan.noTrace && plan.stage1WindowOpened !== true) {
+            plan.stage1WindowOpened = true;
+            stage1OpenWindow();
+        }
     } catch (e) {
         stage1Log("guard-failed", String(e) + " -- falling back to " +
             "unguarded detection");
