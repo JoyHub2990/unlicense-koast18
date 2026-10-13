@@ -3756,29 +3756,44 @@ function stage1TakeLandmark(snapshot, label) {
         }, 0);
     }
 
-    /* Also ask the CPU.
+    /* Candidate execution breakpoints: DISABLED, because they cannot arm and they hang
+     * the target when they appear to.
      *
-     * Interceptor.attach refuses some of these addresses outright and, even when it
-     * succeeds, a candidate may never be reached in the attempt's lifetime. Hardware
-     * execution breakpoints need no code modification at all, so they cover both
-     * cases: no trampoline to place, nothing for the protection to notice, and the
-     * CPU reports the pc the moment one of these addresses is reached. Four debug
-     * registers, so the first four candidates -- the ranking already puts the
-     * plausible callers first. */
-    const hwCandidates = hookable.slice(0, 4).map(function (candidate) {
-        return candidate.value;
-    });
-    if (hwCandidates.length > 0) {
-        plan.stage1Candidates = hwCandidates;
-        plan.onCandidateEntered = function (context) {
-            stage1BackInRsaExptmod(context);
-        };
-        try {
-            hwBreakInstall(plan, hwCandidates.map(function (value) {
-                return ptr(value);
-            }), DR7_FOUR_EXEC);
-        } catch (e) {
-            stage1Log("hwbreak-candidates-failed", String(e));
+     * The debug registers never take the write (rounds 84/85: applied 0, failed 4,
+     * "TypeError: not a function" on both SetThreadContext and NtSetContextThread even
+     * when resolved from KernelBase and ntdll by name). The branch below therefore
+     * cannot be doing useful work, and rounds 89/90 show what it costs: the target sits
+     * in a permanent single-step loop --
+     *
+     *   exception type=single-step addr=0x7ffae3fd6db3 mem=none
+     *   candidate-entered None
+     *   ... repeating, same address, for the rest of the attempt
+     *
+     * because the branch claims the exception and returns true without clearing TF or
+     * DR6, so the CPU re-traps immediately. It only started hanging in round 88: until
+     * then the candidates were main-module values that never matched the pc, so the
+     * branch never claimed anything. Now that the candidates are genuine return
+     * addresses the pc matches and the branch takes the target down.
+     *
+     * The Interceptor hooks on those same addresses are doing the work -- round 88
+     * logged candidate-entered 107 and dec_lic=0x590000 through them -- so the CPU path
+     * is redundant as well as harmful. Kept behind a flag for reference. */
+    if (plan.hwCandidateBreakpoints === true) {
+        const hwCandidates = hookable.slice(0, 4).map(function (candidate) {
+            return candidate.value;
+        });
+        if (hwCandidates.length > 0) {
+            plan.stage1Candidates = hwCandidates;
+            plan.onCandidateEntered = function (context) {
+                stage1BackInRsaExptmod(context);
+            };
+            try {
+                hwBreakInstall(plan, hwCandidates.map(function (value) {
+                    return ptr(value);
+                }), DR7_FOUR_EXEC);
+            } catch (e) {
+                stage1Log("hwbreak-candidates-failed", String(e));
+            }
         }
     }
     return true;
