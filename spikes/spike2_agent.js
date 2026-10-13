@@ -2301,6 +2301,60 @@ function stage1KeyMaterial() {
         " key2 exp=" + stage1.mpInts.key2.exp.struct +
         " mod=" + stage1.mpInts.key2.mod.struct +
         (plan.identityKey ? " identityKey=true" : ""));
+
+    /* Watch the keys themselves.
+     *
+     * Every attempt so far has tried to identify rsa_exptmod from a stack return
+     * address, and every attempt has failed for the same reason: the landmark is a
+     * guard-page hit that happens inside ntdll, so the return addresses on the stack
+     * belong to ntdll frames, and the direct calls found by scanning them are not
+     * mp_exptmod (round 92: sub4-no-key-match on every call, args that are not mp_ints
+     * at all). The keys are the thing the protection actually manipulates, and their
+     * addresses are known right here.
+     *
+     * MemoryAccessMonitor is native and page granular -- it is what Stage 2 already
+     * uses for the hash_3 field -- and its details.from is the pc of the accessing
+     * instruction. So the first read of a key page names the code that reads the key,
+     * which is the code we have been failing to locate. Logged, capped, and never
+     * allowed to throw into the protection's own path. */
+    try {
+        const pages = [];
+        const seenPage = {};
+        [stage1.mpInts.key1.exp, stage1.mpInts.key1.mod,
+         stage1.mpInts.key2.exp, stage1.mpInts.key2.mod].forEach(function (entry) {
+            if (entry === undefined || entry === null || entry.struct === null) {
+                return;
+            }
+            const pageBase = entry.struct.and(ptr("0xfffffffffffff000"));
+            const key = pageBase.toString();
+            if (seenPage[key] === true) {
+                return;
+            }
+            seenPage[key] = true;
+            pages.push({ base: pageBase, size: 0x1000 });
+        });
+        if (pages.length > 0) {
+            let keyAccesses = 0;
+            MemoryAccessMonitor.enable(pages, {
+                onAccess: function (details) {
+                    if (keyAccesses >= 24) {
+                        return;
+                    }
+                    keyAccesses++;
+                    stage1Log("key-access", "op=" + details.operation +
+                        " addr=" + details.address +
+                        " from=" + details.from +
+                        " page=" + details.pageIndex);
+                }
+            });
+            stage1Log("key-monitor-armed", pages.length + " key pages: " +
+                pages.map(function (p) {
+                    return p.base.toString();
+                }).join(" "));
+        }
+    } catch (e) {
+        stage1Log("key-monitor-failed", String(e));
+    }
     return stage1.mpInts;
 }
 
