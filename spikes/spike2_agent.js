@@ -2561,6 +2561,43 @@ function stage1ScanCalls(fromAddress, stopAtRet) {
     let parsed = 0;
     let firstMnemonic = null;
     let parseError = null;
+
+    /* Follow a jump thunk first.
+     *
+     * Round 78 answered why this scan kept coming back empty: the candidate address
+     * starts with a `jmp` (first=jmp, parsed=111, then an invalid instruction). It is
+     * a thunk, which is what WinLicense's obfuscation produces all over the unpacked
+     * code. Scanning forward from a thunk walks through it into whatever follows and
+     * finds no calls at all, so a function that really is rsa_exptmod gets rejected.
+     *
+     * A thunk's whole purpose is to be followed: resolve the jump and scan the target. */
+    try {
+        const first = Instruction.parse(address);
+
+        if (first.mnemonic === "jmp") {
+            const opcode = Memory.readU8(address);
+            let target = null;
+
+            if (opcode === 0xE9) {
+                // jmp rel32
+                target = address.add(5).add(Memory.readS32(address.add(1)));
+            } else if (opcode === 0xFF && Memory.readU8(address.add(1)) === 0x25) {
+                // jmp qword ptr [rip + disp32]
+                const disp = Memory.readS32(address.add(2));
+                const slot = address.add(6).add(disp);
+                target = slot.readPointer();
+            }
+
+            if (target !== null && !target.isNull()) {
+                stage1Log("sub2-thunk-followed", "candidate " + fromAddress +
+                    " is a jmp thunk -> " + target);
+                address = target;
+            }
+        }
+    } catch (e) {
+        /* Not a thunk, or unreadable; scan from the candidate itself. */
+    }
+
     for (let i = 0; i < 4000; i++) {
         let insn;
         try {
