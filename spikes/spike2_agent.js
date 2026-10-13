@@ -676,7 +676,17 @@ function stage2LocateBufferByContent() {
     }
     let pattern = null;
     try {
-        pattern = copy.readByteArray(8);
+        /* Memory.scanSync takes a pattern string or a MatchPattern, not the
+         * ArrayBuffer that readByteArray returns. Passing the ArrayBuffer threw
+         * "expected either a pattern string or a MatchPattern object" on every
+         * call -- round 64 finally showed the message -- which is why the sweep
+         * always reported scanned=0x0 and why every round armed Stage 2 on a
+         * garbage address. scanForHead builds a hex string and has always worked;
+         * do the same here. */
+        const raw = new Uint8Array(copy.readByteArray(8));
+        pattern = Array.prototype.map.call(raw, function (byte) {
+            return byte.toString(16).padStart(2, "0");
+        }).join(" ");
     } catch (e) {
         stage2Log("buf-scan", "lic_copy unreadable: " + e);
         return;
