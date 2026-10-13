@@ -3190,6 +3190,34 @@ function stage1OnLicensePageAccess(details) {
     const from = Process.findModuleByAddress(pc);
     if (stage1IsSystemModule(from)) {
         stage1.collateralReads = (stage1.collateralReads || 0) + 1;
+        /* The read came through a system library, but its caller is what decides:
+         * round 59 had 15 collateral reads all with pc in ntdll and no landmark at
+         * all, because the protection reads its licence through the CRT's copy
+         * routines. Any frame pointing outside the system modules -- into the main
+         * module, or into memory the protection allocated for itself, which
+         * findModuleByAddress reports as null -- is the protection's own read. */
+        let callerIsProtection = false;
+        const frame = [];
+        const sp = ctx[SP_REG];
+        for (let off = 0; off <= 0x60; off += PTR_SIZE) {
+            try {
+                const value = sp.add(off).readPointer();
+                let tag = "";
+                if (!value.isNull()) {
+                    const module = Process.findModuleByAddress(value);
+                    if (module === null) {
+                        tag = " <private>";
+                        callerIsProtection = true;
+                    } else if (!stage1IsSystemModule(module)) {
+                        tag = " " + module.name;
+                        callerIsProtection = true;
+                    }
+                }
+                frame.push("[sp+" + off.toString(16) + "]=" + value + tag);
+            } catch (e) {
+                /* unreadable slot */
+            }
+        }
         if (stage1.collateralReads <= 5) {
             /* Log the raw stack window and tag every slot that points into a
              * non-system module. The protection may read its license copy
@@ -3198,32 +3226,17 @@ function stage1OnLicensePageAccess(details) {
              * caller is the protection. The caller's return address is the
              * only thing that distinguishes the two, and Thread.backtrace
              * cannot be used here (it kills the target), so read the slots. */
-            const frame = [];
-            const sp = ctx[SP_REG];
-            for (let off = 0; off <= 0x60; off += PTR_SIZE) {
-                try {
-                    const value = sp.add(off).readPointer();
-                    let tag = "";
-                    if (!value.isNull()) {
-                        const module = Process.findModuleByAddress(value);
-                        if (module === null) {
-                            tag = " <private>";
-                        } else if (!stage1IsSystemModule(module)) {
-                            tag = " " + module.name;
-                        }
-                    }
-                    frame.push("[sp+" + off.toString(16) + "]=" + value + tag);
-                } catch (e) {
-                    /* unreadable slot */
-                }
-            }
             stage1Log("sub1-collateral-read", "pc=" + pc + " (" +
                 from.name + ") addr=" + address + " frame: " +
                 frame.join(" "));
         }
-        /* Skip it and keep watching: re-arm once the retry has completed. */
-        scheduleRearm();
-        return true;
+        if (!callerIsProtection) {
+            /* Skip it and keep watching: re-arm once the retry has completed. */
+            scheduleRearm();
+            return true;
+        }
+        stage1Log("sub1-landmark-via-crt", "pc=" + pc + " (" + from.name +
+            ") addr=" + address + " -- caller outside the system modules");
     }
     stage1.landmarks = (stage1.landmarks || 0) + 1;
     /* Count landmarks, not guard hits: the guard page is re-armed after every
