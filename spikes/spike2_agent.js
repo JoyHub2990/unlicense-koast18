@@ -2469,7 +2469,10 @@ function stage1BackInRsaExptmod(context) {
         stage1Log("sub2-reject", "pc=" + context[PC_REG] + " retToRsa=" +
             stage1.retToRsa + " dec_lic=" + stage1.decLic +
             " no direct calls -- not rsa_exptmod, waiting for another " +
-            "candidate (rejected " + stage1.rejectedCandidates + ")");
+            "candidate (rejected " + stage1.rejectedCandidates + ")" +
+            " [parsed=" + stage1ScanCalls.lastParsed +
+            " first=" + stage1ScanCalls.lastFirst +
+            " err=" + stage1ScanCalls.lastError + "]");
         stage1.sub = 2;
         return;
     }
@@ -2555,12 +2558,26 @@ function stage1BackInRsaExptmod(context) {
 function stage1ScanCalls(fromAddress, stopAtRet) {
     const destinations = [];
     let address = fromAddress;
+    let parsed = 0;
+    let firstMnemonic = null;
+    let parseError = null;
     for (let i = 0; i < 4000; i++) {
         let insn;
         try {
             insn = Instruction.parse(address);
         } catch (e) {
+            /* Record why the scan stopped.
+             *
+             * "no direct calls" has two very different causes: the function really
+             * has none, or the first instruction could not be parsed at all (an
+             * unreadable or unmapped region). Both produce an empty list, and the
+             * fix is different for each -- so keep the count and the first error. */
+            parseError = String(e);
             break;
+        }
+        parsed++;
+        if (firstMnemonic === null) {
+            firstMnemonic = insn.mnemonic;
         }
         /* Stopping at the first ret is right when scanning a whole function from
          * its entry, and wrong here: the validation below starts at a candidate's
@@ -2586,6 +2603,9 @@ function stage1ScanCalls(fromAddress, stopAtRet) {
         }
         address = insn.next;
     }
+    stage1ScanCalls.lastParsed = parsed;
+    stage1ScanCalls.lastFirst = firstMnemonic;
+    stage1ScanCalls.lastError = parseError;
     return destinations;
 }
 
