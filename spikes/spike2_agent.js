@@ -3136,7 +3136,18 @@ function stage1RankCandidates(snapshot) {
             label: "sp+" + slot.offset.toString(16),
             value: value.toString(),
             inModule: !stage1IsSystemModule(module) && executable,
-            sameRange: sameRange
+            sameRange: sameRange,
+            /* The decisive property.
+             *
+             * Round 87's lic-page-access line shows the fault happening inside a system
+             * module (pc=0x7ff9a2964703) with the genuine return addresses on the stack
+             * in that same system-module range -- [sp+0] and [sp+760], both tagged
+             * (ret). The inModule filter above requires the address to be in the *main*
+             * module, so it discarded both and kept six main-module values that merely
+             * happen to be executable, which is why hooks attached and never fired.
+             * 'A call ends exactly here' is the property that matters, wherever the
+             * address lives. */
+            isReturn: stage1IsReturnAddress(value)
         });
     }
     /* Keep the counts.
@@ -3575,12 +3586,39 @@ function stage1TakeLandmark(snapshot, label) {
     /* The guard bit is already cleared by the OS, so the instruction will
      * succeed on retry; no re-protect is needed. */
     stage1.guardArmed = false;
-    /* Hook every stack slot that holds a code address inside the module:
-     * the first one to be reached is the return into rsa_exptmod, and
-     * logging which slot it was pins the offset down for later runs. */
-    const usable = candidates.filter(function (candidate) {
-        return candidate.inModule;
-    }).slice(0, 6);
+    /* Rank by "a call ends exactly here", not by which module the address is in.
+     *
+     * Round 87 settled it: the fault happens in a system module, the real return
+     * addresses are in that same range ([sp+0] and [sp+760], both (ret)), and the old
+     * inModule filter threw both away in favour of six main-module values that only
+     * looked like code. Prefer the ones that are also in the reading pc's range -- that
+     * is the frame of the code that called the routine doing the copy -- then the rest
+     * of the return addresses, deepest first, because the deeper slots belong to the
+     * outer frames. */
+    const returnSlots = candidates.filter(function (candidate) {
+        return candidate.isReturn;
+    });
+    const preferredSlots = returnSlots.filter(function (candidate) {
+        return candidate.sameRange;
+    }).concat(returnSlots.filter(function (candidate) {
+        return !candidate.sameRange;
+    })).sort(function (a, b) {
+        if (a.sameRange !== b.sameRange) {
+            return a.sameRange ? -1 : 1;
+        }
+        return b.offset - a.offset;
+    });
+    const usable = (preferredSlots.length > 0 ? preferredSlots : candidates.filter(
+        function (candidate) {
+            return candidate.inModule;
+        })).slice(0, 6);
+    if (returnSlots.length > 0) {
+        stage1Log("sub1-return-slots", returnSlots.length + " real return addresses: " +
+            returnSlots.map(function (candidate) {
+                return "[" + stage1CandidateLabel(candidate) + "]=" + candidate.value +
+                    (candidate.sameRange ? "(same-range)" : "");
+            }).join(" "));
+    }
 
     /* Of those, keep only the ones that are actually return addresses.
      *
