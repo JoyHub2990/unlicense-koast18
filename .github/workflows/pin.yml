@@ -36,6 +36,10 @@ on:
         description: "Intel PIN Windows kit (default: re-hosted in the private release; software.intel.com 403s GitHub runner IPs)"
         type: string
         default: "gh:koast18/wl-samples:pin-kit"
+      no_instrument:
+        description: "1 = diagnostic: keep the API hooks but skip per-instruction instrumentation (tests whether WL detects the instrumentation and skips licence processing)"
+        type: string
+        default: "0"
 
 concurrency:
   group: pin-${{ github.ref }}-${{ inputs.target }}-${{ inputs.platform }}
@@ -179,6 +183,12 @@ jobs:
           $target = "${{ inputs.target }}"
           $log = Join-Path $root 'wl_log.txt'
           Write-Host "running: $pin -t $ext -d regkey.dat -r regkey.rsa -o $log -- $target"
+
+          # Diagnostic: hooks only, no per-instruction instrumentation.
+          if ('${{ inputs.no_instrument }}' -eq '1') {
+            $env:WL_NO_INSTRUMENT = '1'
+            Write-Host "WL_NO_INSTRUMENT=1 (hooks only, no instruction instrumentation)"
+          }
           $out = Join-Path $root 'pin_stdout.txt'
           $err = Join-Path $root 'pin_stderr.txt'
           # Every path handed to PIN is quoted.
