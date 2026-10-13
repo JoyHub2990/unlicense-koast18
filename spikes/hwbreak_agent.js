@@ -45,6 +45,16 @@ const THREAD_ACCESS = THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
 /* DR7 for three 1-byte read/write breakpoints. */
 const DR7_THREE_RW_BYTE = 0x03330015;
 
+/* DR7 for four *execution* breakpoints: local-enable L0..L3 (bits 0,2,4,6 = 0x55)
+ * with every RWn/LENn field left at 00.
+ *
+ * The data form above is what Stage 2 wants (a read of the hash_3 field). What the
+ * candidate addresses need is different: the question is whether execution *reaches*
+ * the address, and that is an execution breakpoint -- RW=00, LEN=00. Using the data
+ * form on a code address would only fire if the code were read or written as data,
+ * which never happens, so the breakpoint would sit there silently. */
+const DR7_FOUR_EXEC = 0x00000055;
+
 const CONTEXT_BUF_SIZE = 0x800;
 
 function hwBreakLayout() {
@@ -135,7 +145,7 @@ function hwBreakApis() {
  * SetThreadContext with ContextFlags = CONTEXT_DEBUG_REGISTERS writes only
  * the debug registers, so the rest of the context is left alone.
  */
-function hwBreakApplyToThread(tid, addresses, enable) {
+function hwBreakApplyToThread(tid, addresses, enable, dr7) {
     /* Every step is labelled.
      *
      * Round 35 finally said what the failure is -- "TypeError: not a function" --
@@ -143,6 +153,7 @@ function hwBreakApplyToThread(tid, addresses, enable) {
      * returning false, which no single call site explains. A step label turns the
      * next round into the line number. */
     let step = "hwBreakApis";
+    const dr7Value = (dr7 === undefined || dr7 === null) ? DR7_THREE_RW_BYTE : dr7;
     try {
         const api = hwBreakApis();
         step = "hwBreakLayout";
@@ -174,7 +185,7 @@ function hwBreakApplyToThread(tid, addresses, enable) {
                 step = "Dr2";
                 ctx.add(layout.dr2).writePointer(addresses[2] || ptr(0));
                 step = "Dr7";
-                ctx.add(layout.dr7).writePointer(ptr(DR7_THREE_RW_BYTE));
+                ctx.add(layout.dr7).writePointer(ptr(dr7Value));
             }
             step = "SetThreadContext";
             let wrote = false;
@@ -190,6 +201,31 @@ function hwBreakApplyToThread(tid, addresses, enable) {
                 step = "GetLastError";
                 hwBreakApplyToThread.lastError =
                     "tid=" + tid + " write-context err=" + api.GetLastError();
+            }
+            /* Read the registers back.
+             *
+             * "applied" has only ever meant "the write call returned success", and
+             * the whole mechanism has been carried on that assumption without ever
+             * checking the kernel kept what was written. GetThreadContext with the
+             * same ContextFlags reads Dr0..Dr3 and Dr7; if they come back as written,
+             * the breakpoints are really armed, and if they do not, the log says so
+             * instead of leaving it to the next round to wonder. */
+            if (ok) {
+                step = "readback";
+                const back = Memory.alloc(CONTEXT_BUF_SIZE);
+                back.writeByteArray(new Uint8Array(CONTEXT_BUF_SIZE));
+                back.add(layout.flags).writeU32(layout.contextFlags);
+                if (api.GetThreadContext(handle, back).toInt32() !== 0) {
+                    hwBreakApplyToThread.lastReadback = {
+                        dr0: back.add(layout.dr0).readPointer().toString(),
+                        dr1: back.add(layout.dr1).readPointer().toString(),
+                        dr7: "0x" + back.add(layout.dr7).readPointer().toString(16)
+                    };
+                } else {
+                    hwBreakApplyToThread.lastReadback = {
+                        dr0: "readback-failed", dr1: null, dr7: null
+                    };
+                }
             }
         } finally {
             /* Closing is best effort, and must never mask a successful install.
@@ -217,7 +253,7 @@ function hwBreakApplyToThread(tid, addresses, enable) {
 /* Install on every thread that exists right now. Threads created later are
  * not covered -- for drchost the license read happens on the thread that
  * unmapped the license, which already exists at this point. */
-function hwBreakInstall(plan, addresses) {
+function hwBreakInstall(plan, addresses, dr7) {
     const targets = addresses.filter(function (a) {
         return a !== null && a !== undefined;
     });
@@ -228,10 +264,14 @@ function hwBreakInstall(plan, addresses) {
     let applied = 0;
     let failed = 0;
     const reasons = [];
+    let readback = null;
     for (const thread of Process.enumerateThreads()) {
         let ok = false;
         try {
-            ok = hwBreakApplyToThread(thread.id, targets, true);
+            ok = hwBreakApplyToThread(thread.id, targets, true, dr7);
+            if (ok && readback === null) {
+                readback = hwBreakApplyToThread.lastReadback || null;
+            }
         } catch (e) {
             ok = false;
             if (reasons.length < 3) {
@@ -263,7 +303,9 @@ function hwBreakInstall(plan, addresses) {
                 applied: applied, failed: failed,
                 reasons: reasons.slice(0, 2),
                 resolved: resolvedShort,
-                dr7: "0x" + DR7_THREE_RW_BYTE.toString(16) });
+                dr7: "0x" + ((dr7 === undefined || dr7 === null)
+                    ? DR7_THREE_RW_BYTE : dr7).toString(16),
+                readback: readback });
     return plan.hwBreakActive;
 }
 
@@ -318,6 +360,34 @@ function hwBreakOnException(plan, details) {
                         detail: "#" + s2.hw3Hits });
         }
         return true;
+    }
+    /* Candidate execution breakpoints, also independent of Stage 1's landmark flag.
+     *
+     * After the landmark the candidates are known but Interceptor.attach refuses some
+     * of them ("unable to intercept function at ..."), and even when it succeeds the
+     * address may simply never be reached inside the attempt's lifetime. An execution
+     * breakpoint asks the CPU instead of rewriting the code: no trampoline, no
+     * relocation, nothing for the protection to notice. When the pc matches one of the
+     * candidates, that candidate has been entered -- which is exactly what
+     * stage1BackInRsaExptmod wants to know. */
+    if (plan.stage1Candidates !== undefined && plan.stage1Candidates !== null &&
+        details.type === "single-step") {
+        const pc = String(details.context[plan.PC_REG]);
+        const hit = plan.stage1Candidates.filter(function (a) {
+            return a === pc;
+        });
+        if (hit.length > 0) {
+            plan.hwBreakHits = (plan.hwBreakHits || 0) + 1;
+            plan.emit({ spike: "stage1", event: "candidate-entered",
+                        pc: pc, hits: plan.hwBreakHits });
+            try {
+                plan.onCandidateEntered(details.context);
+            } catch (e) {
+                plan.emit({ spike: "stage1", event: "candidate-enter-error",
+                            detail: String(e) });
+            }
+            return true;
+        }
     }
     if (!plan.hwBreakActive) {
         return false;

@@ -3624,6 +3624,32 @@ function stage1TakeLandmark(snapshot, label) {
             }
         }, 0);
     }
+
+    /* Also ask the CPU.
+     *
+     * Interceptor.attach refuses some of these addresses outright and, even when it
+     * succeeds, a candidate may never be reached in the attempt's lifetime. Hardware
+     * execution breakpoints need no code modification at all, so they cover both
+     * cases: no trampoline to place, nothing for the protection to notice, and the
+     * CPU reports the pc the moment one of these addresses is reached. Four debug
+     * registers, so the first four candidates -- the ranking already puts the
+     * plausible callers first. */
+    const hwCandidates = usable.slice(0, 4).map(function (candidate) {
+        return candidate.value;
+    });
+    if (hwCandidates.length > 0) {
+        plan.stage1Candidates = hwCandidates;
+        plan.onCandidateEntered = function (context) {
+            stage1BackInRsaExptmod(context);
+        };
+        try {
+            hwBreakInstall(plan, hwCandidates.map(function (value) {
+                return ptr(value);
+            }), DR7_FOUR_EXEC);
+        } catch (e) {
+            stage1Log("hwbreak-candidates-failed", String(e));
+        }
+    }
     return true;
 }
 
