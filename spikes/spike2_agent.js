@@ -888,11 +888,15 @@ function startStage2(decLic) {
     }, 0);
 }
 
-/* Native access watch on the license's hash_3 field.
+/* Native access watch on the license buffer.
  *
- * whatlicense's find_hash_read is exactly this: `(ea == dec_lic + 0x33) && (size
- * == 2)`. MemoryAccessMonitor gives the same signal without PIN's per-read
- * callback and without our guard page. */
+ * whatlicense's find_hash_read is `(ea == dec_lic + 0x33) && (size == 2)`, but
+ * 0x33 is an offset in the version whatlicense was written against. Round 54
+ * watched exactly that address and the protection never read it once -- while a
+ * page-shared read did arrive, so the watch was live. Watch the whole buffer
+ * instead and report which offsets are actually read and what 2-byte values live
+ * there: that measures the real hash_3 offset in this WinLicense build rather than
+ * assuming whatlicense's. */
 function stage2ArmHash3Monitor() {
     const s2 = stage2State();
     if (s2.decLicBuf === null || s2.decLicBuf === undefined) {
@@ -902,19 +906,37 @@ function stage2ArmHash3Monitor() {
     const address = s2.decLicBuf.add(HASH3_OFFSET);
     s2.hash3Address = address;
     s2.hash3Reads = 0;
+    s2.fieldsSeen = {};
     try {
         MemoryAccessMonitor.enable({
-            base: address,
-            size: 2
+            base: s2.decLicBuf,
+            size: Math.max(2, plan.licSize)
         }, {
             onAccess: function (details) {
                 s2.hash3Reads = (s2.hash3Reads || 0) + 1;
-                /* MemoryAccessMonitor is page-granular, so reads of anything else
-                 * sharing the page arrive here too -- round 53's first hit was
-                 * read@0x58d478 from ntdll, not the licence field at 0x58dd83.
-                 * whatlicense's find_hash_read is an exact address test
-                 * (ea == dec_lic + 0x33) and size 2; keep that rule and only
-                 * report the rest as collateral. */
+                /* Record every distinct offset inside the buffer that gets read,
+                 * with its value, so the field the protection actually inspects
+                 * can be read off the log. */
+                const offset = details.address.sub(s2.decLicBuf).toInt32();
+                if (offset >= 0 && offset < Math.max(2, plan.licSize)) {
+                    const key = offset.toString(16);
+                    if (s2.fieldsSeen[key] === undefined) {
+                        let value = "?";
+                        try {
+                            value = "0x" +
+                                details.address.readU16().toString(16);
+                        } catch (e) {
+                            /* unreadable */
+                        }
+                        s2.fieldsSeen[key] = value;
+                        if (Object.keys(s2.fieldsSeen).length <= 40) {
+                            stage2Log("field-read", "offset=0x" + key +
+                                " value=" + value +
+                                " op=" + details.operation +
+                                " from=" + details.from);
+                        }
+                    }
+                }
                 const exact = details.address.compare(s2.hash3Address) >= 0 &&
                     details.address.compare(s2.hash3Address.add(2)) < 0;
                 if (!exact) {
