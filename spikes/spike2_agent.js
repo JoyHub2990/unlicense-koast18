@@ -2452,6 +2452,43 @@ function stage1BackInRsaExptmod(context) {
             }
         }
     }
+    /* On x64 the destination is an argument register, not a frame slot.
+     *
+     * The offsets above are the x86 layout, and round 81's log shows what they read
+     * on x64: "[sp+8c]=0x0 [sp+90]=0x0 [sp+94]=0x0" -- all zeros, so dec_lic stays
+     * null and the whole completion path is unreachable. whatlicense's comment says
+     * the value is "an argument to rsa_exptmod", and on x64 the arguments live in
+     * rcx/rdx/r8/r9. rsa_exptmod(in, inlen, out, outlen, key) makes out the 3rd
+     * argument, i.e. r8 -- so read the registers too, and prefer a writable
+     * non-stack pointer, exactly as for the frame slots. */
+    if (!IS_IA32 && chosen === null) {
+        for (const name of ["r8", "rdx", "rcx", "r9"]) {
+            let value = null;
+            try {
+                value = context[name];
+            } catch (e) {
+                continue;
+            }
+            if (value === null || value === undefined) {
+                continue;
+            }
+            let writable = false;
+            let onStack = false;
+            try {
+                const range = Process.findRangeByAddress(value);
+                writable = range !== null && range.protection.indexOf("w") >= 0;
+                onStack = value.compare(sp) >= 0 &&
+                    value.compare(sp.add(0x20000)) < 0;
+            } catch (e) {
+                /* unreadable */
+            }
+            observed.push(name + "=" + value + (writable ? " w" : "") +
+                (onStack ? " stack" : ""));
+            if (chosen === null && writable && !onStack) {
+                chosen = value;
+            }
+        }
+    }
     stage1.decLic = chosen !== null ? chosen.toString() : null;
     stage1Log("sub2-back-in-rsaexptmod", "pc=" + context[PC_REG] +
         " dec_lic=" + stage1.decLic + " frame: " + observed.join(" "));
