@@ -3419,6 +3419,43 @@ function startStage1(licCopy) {
     }
 }
 
+/* Resolve Stage 0 by content on a timer.
+ *
+ * Round 56: only 6 of 30 attempts reached Stage 0, while the content scan itself
+ * worked every time it ran (exactly one hit each). The problem is that the scan
+ * only runs from inside the UnmapViewOfFile hook, so when that hook misses the
+ * protection's mapping -- it races process start, and tracing_started_at_map
+ * reported zero threads in some attempts -- the scan never happens at all. Polling
+ * makes Stage 0 independent of catching one syscall at the right moment. */
+function startStage0FallbackScan() {
+    let ticks = 0;
+    const timer = setInterval(function () {
+        ticks++;
+        const s1 = plan.stage1;
+        if (s1 === undefined || s1.active === true || ticks > 20) {
+            clearInterval(timer);
+            return;
+        }
+        let hits = [];
+        try {
+            hits = scanForHead();
+        } catch (e) {
+            return;
+        }
+        if (hits.length > 0) {
+            clearInterval(timer);
+            emit({ spike: "stage0-fallback", event: "content-hit",
+                   addr: hits[0], ticks: ticks });
+            try {
+                startStage1(ptr(hits[0]));
+            } catch (e) {
+                emit({ spike: "stage0-fallback", event: "error",
+                       detail: String(e) });
+            }
+        }
+    }, 250);
+}
+
 rpc.exports = {
     setup: function (options) {
         const headBytes = [];
@@ -3658,6 +3695,7 @@ rpc.exports = {
              * mapped lets the unpacking run at native speed and engages the
              * trace exactly where Stage 0 needs it. The MapViewOfFile hook
              * starts it. */
+            startStage0FallbackScan();
             return { deferred: true, threads: 0 };
         }
         plan.tracing = true;
