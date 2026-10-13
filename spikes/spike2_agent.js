@@ -3164,7 +3164,12 @@ function stage1RankCandidates(snapshot) {
              * happen to be executable, which is why hooks attached and never fired.
              * 'A call ends exactly here' is the property that matters, wherever the
              * address lives. */
-            isReturn: stage1IsReturnAddress(value)
+            /* The (ret) test costs up to fifteen Instruction.parse calls, so gate it on
+             * the value being inside a module at all -- Process.findModuleByAddress is
+             * an interval lookup and already runs for every slot below. With the
+             * window at 0x8000 there are 4096 slots and almost all of them hold heap
+             * or stack values, so this keeps the exception handler fast. */
+            isReturn: module !== null && stage1IsReturnAddress(value)
         });
     }
     /* Keep the counts.
@@ -3536,15 +3541,18 @@ function stage1CaptureLandmark(context) {
     const sp = context[SP_REG];
     const values = [];
     const step = Process.pointerSize;
-    /* Deeper than it was.
+    /* Deeper again.
      *
-     * The window was 0x400, and round 79 showed the scan coming back empty in roughly
-     * nine landmarks out of ten (sub1-no-code-return-candidate 52 against 57
-     * landmarks). The guard hit arrives from ntdll -- a CRT copy -- so the
-     * protection's own return addresses sit well below that frame. Reading stack slots
-     * is cheap and safe even inside the exception handler (unlike range lookups or
-     * Interceptor.attach, which are deferred), so widen the window. */
-    for (let offset = 0; offset <= 0x1000; offset += step) {
+     * The window was 0x400, then 0x1000 (round 79: the scan came back empty in nine
+     * landmarks out of ten at 0x400). Round 89 shows what 0x1000 buys: two genuine
+     * return addresses, [sp+0] and [sp+760], and both of them land inside ntdll --
+     * so stage1ScanCalls scans forward from an ntdll frame and hooks ntdll's own
+     * calls, whose arguments are 0x0 (sub4-no-key-match: arg0=0x0 null, arg1=0x0
+     * null). The frame we want is the one *below* the CRT copy that touched the
+     * licence, and 0x760 being the deepest hit means it is further down than this
+     * window reaches. Reading stack slots is cheap and safe inside the exception
+     * handler, so take 0x8000. */
+    for (let offset = 0; offset <= 0x8000; offset += step) {
         try {
             values.push({
                 offset: offset,
