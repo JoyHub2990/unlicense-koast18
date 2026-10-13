@@ -384,8 +384,16 @@ function hwBreakOnException(plan, details) {
      * stage1BackInRsaExptmod wants to know. */
     if (plan.stage1Candidates !== undefined && plan.stage1Candidates !== null &&
         details.type === "single-step") {
-        const pc = String(details.context[plan.PC_REG]);
-        const hit = plan.stage1Candidates.filter(function (a) {
+        /* Frida's exception context exposes the program counter as `pc`.
+         *
+         * PC_REG is "rip"/"eip", which is the right name on an Interceptor CpuContext
+         * and the wrong one here, so this comparison was against String(undefined) and
+         * round 88 logged candidate-entered with a null pc. Read `pc` and fall back to
+         * PC_REG for the case where the property is present under that name. */
+        const ctx = details.context || {};
+        const rawPc = ctx.pc !== undefined ? ctx.pc : ctx[plan.PC_REG];
+        const pc = rawPc === undefined || rawPc === null ? null : String(rawPc);
+        const hit = pc === null ? [] : plan.stage1Candidates.filter(function (a) {
             return a === pc;
         });
         if (hit.length > 0) {

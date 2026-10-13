@@ -2428,7 +2428,24 @@ function stage1BackInRsaExptmod(context) {
     if (!stage1.active || stage1.sub !== 2) {
         return;
     }
-    const sp = context[SP_REG];
+    /* Derive retToRsa from the context when it is not already set.
+     *
+     * This function is only ever entered at a candidate address -- an Interceptor hook
+     * placed on one, or a hardware breakpoint firing on one -- so the pc *is* that
+     * address. The Interceptor path sets stage1.retToRsa before calling, but the
+     * hardware-breakpoint path did not, and ptr(null) throws "expected a pointer":
+     * round 88 logged candidate-enter-error 21 times for exactly that reason, which
+     * killed a fifth of the entries. Deriving it here makes both paths work and
+     * removes the ordering dependency. */
+    if (!stage1.retToRsa && context[PC_REG] !== undefined && context[PC_REG] !== null) {
+        stage1.retToRsa = String(context[PC_REG]);
+        stage1Log("sub2-ret-to-rsa", "derived from context: " + stage1.retToRsa);
+    }
+    if (!stage1.retToRsa) {
+        stage1Log("sub2-no-ret-to-rsa", "context has no pc; cannot scan the function");
+        return;
+    }
+    const sp = context[SP_REG] !== undefined ? context[SP_REG] : context.sp;
     const observed = [];
     let chosen = null;
     for (const offset of plan.decLicCandidates) {
