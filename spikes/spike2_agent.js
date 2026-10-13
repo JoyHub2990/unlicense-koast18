@@ -3070,6 +3070,37 @@ function stage1RankCandidates(snapshot) {
             sameRange: sameRange
         });
     }
+    /* Keep the counts.
+     *
+     * Round 79 showed sub1-no-code-return-candidate firing 52 times against 57
+     * landmarks: roughly nine landmarks in ten yield no usable candidate, so the frame
+     * scan is the bottleneck, not the scan-for-calls that follows it. Whether it finds
+     * nothing or finds things it then filters is the difference between scanning
+     * deeper and fixing the filter, so record both numbers. */
+    let executable = 0;
+    let nonSystem = 0;
+    for (const slot of slots) {
+        if (slot.value !== "0x0") {
+            if (slot.sameRange) {
+                nonSystem++;
+            }
+        }
+    }
+    for (const slot of slots) {
+        try {
+            if (stage1IsExecutable(ptr(slot.value))) {
+                executable++;
+            }
+        } catch (e) {
+            /* unreadable */
+        }
+    }
+    stage1RankCandidates.lastStats = {
+        slots: slots.length,
+        executable: executable,
+        usable: slots.filter(function (s) { return s.inModule; }).length,
+        sameRange: nonSystem
+    };
     /* Same-range candidates first: they are the plausible callers. */
     slots.sort(function (a, b) {
         return (b.sameRange ? 1 : 0) - (a.sameRange ? 1 : 0);
@@ -3408,7 +3439,15 @@ function stage1CaptureLandmark(context) {
     const sp = context[SP_REG];
     const values = [];
     const step = Process.pointerSize;
-    for (let offset = 0; offset <= 0x400; offset += step) {
+    /* Deeper than it was.
+     *
+     * The window was 0x400, and round 79 showed the scan coming back empty in roughly
+     * nine landmarks out of ten (sub1-no-code-return-candidate 52 against 57
+     * landmarks). The guard hit arrives from ntdll -- a CRT copy -- so the
+     * protection's own return addresses sit well below that frame. Reading stack slots
+     * is cheap and safe even inside the exception handler (unlike range lookups or
+     * Interceptor.attach, which are deferred), so widen the window. */
+    for (let offset = 0; offset <= 0x1000; offset += step) {
         try {
             values.push({
                 offset: offset,
@@ -3468,7 +3507,12 @@ function stage1TakeLandmark(snapshot, label) {
         return candidate.inModule;
     }).slice(0, 6);
     if (usable.length === 0) {
-        stage1Log("sub1-no-code-return-candidate", "logged candidates above");
+        const stats = stage1RankCandidates.lastStats || {};
+        stage1Log("sub1-no-code-return-candidate",
+            "logged candidates above; slots=" + stats.slots +
+            " executable=" + stats.executable +
+            " usable=" + stats.usable +
+            " sameRange=" + stats.sameRange);
         /* No stack slot held a code address, so there is nothing to hook.
          * Report it rather than re-arming, which would spin the thread. */
         report.stage1NoReturnCandidate = true;
