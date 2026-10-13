@@ -2479,6 +2479,23 @@ function stage1MpExptmodEnter(context) {
  * pointer found is used. */
 function stage1BackInRsaExptmod(context) {
     const stage1 = plan.stage1;
+    /* Say why this entry is allowed.
+     *
+     * Round 93 logged sub3-hooked-sync 145 against round 92's 8, and each re-entry
+     * attaches Interceptor hooks to the same destinations again, which slows the target
+     * until it hits the 60s per-sample timeout. The guard below should stop the second
+     * entry outright (sub becomes 3 on the success path), and no sub2-reject appears in
+     * the log, so something is putting sub back to 2 -- a state-machine path that is not
+     * obvious from the code. Log the state instead of guessing at it: sub, how many
+     * hooks are already attached, and a per-attempt entry count. */
+    stage1.enterCount = (stage1.enterCount || 0) + 1;
+    if (stage1.enterCount <= 8) {
+        stage1Log("sub2-entry", "#" + stage1.enterCount +
+            " sub=" + stage1.sub + " hooks=" + plan.hooks.length +
+            " rejected=" + (stage1.rejectedCandidates || 0) +
+            " guardArmed=" + stage1.guardArmed +
+            " pc=" + context[PC_REG]);
+    }
     if (!stage1.active || stage1.sub !== 2) {
         return;
     }
