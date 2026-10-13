@@ -3019,6 +3019,43 @@ function disarmGuard() {
     stage1.guardArmed = false;
 }
 
+/* Trace for a bounded stretch, starting from the licence read.
+ *
+ * The transform is what makes Stage 1's landmark findable, and it is also what
+ * makes the protection give up (round 51: licence reads 52 with it off, 0 with it
+ * on). Tracing only around the licence code gets both. */
+function stage1OpenWindow() {
+    let followed = 0;
+    for (const thread of Process.enumerateThreads()) {
+        try {
+            Stalker.follow(thread.id, { transform: install });
+            followed++;
+        } catch (e) {
+            /* best effort */
+        }
+    }
+    emit({ spike: "stage1", event: "window-open", threads: followed,
+           detail: "bounded tracing from the licence read" });
+    setTimeout(function () {
+        let stopped = 0;
+        for (const thread of Process.enumerateThreads()) {
+            try {
+                Stalker.unfollow(thread.id);
+                stopped++;
+            } catch (e) {
+                /* best effort */
+            }
+        }
+        try {
+            Stalker.flush();
+        } catch (e) {
+            /* best effort */
+        }
+        emit({ spike: "stage1", event: "window-close", threads: stopped,
+               detail: "bounded window over; target back to full speed" });
+    }, 4000);
+}
+
 function stage1OnLicensePageAccess(details) {
     const stage1 = plan.stage1;
     if (!stage1.active) {
@@ -3062,6 +3099,24 @@ function stage1OnLicensePageAccess(details) {
     if (stage1.guardHits <= 8) {
         stage1Log("guard-hit", "#" + stage1.guardHits + " op=" + operation +
             " addr=" + address + " lic_copy=" + stage1.preRsaBuf);
+    }
+    /* Open a bounded tracing window right here.
+     *
+     * Round 51 settled it: with the map-time transform off, the protection reads
+     * the licence page 52 times per run; with it on, zero. The transform costs a
+     * JS callback per instruction, the target runs a hundredfold slower, and that
+     * is what the protection reacts to -- it never verifies and never reaches its
+     * OEP.
+     *
+     * But Stage 1's landmark -- locating the mp_exptmod call -- came from that
+     * same transform. So trace only from the moment the licence is read: the guard
+     * page has just told us the protection is inside its licence code, and in the
+     * transform-on runs the RSA call showed up 1.8-2.5s in. A four-second window
+     * that starts here is the difference between a hundredfold slowdown for the
+     * whole 45s run and for four seconds of it. */
+    if (plan.noTrace && plan.stage1WindowOpened !== true) {
+        plan.stage1WindowOpened = true;
+        stage1OpenWindow();
     }
     /* The first READ in the guarded page that comes from the main module is
      * the landmark.
