@@ -3079,7 +3079,14 @@ function stage1IsReturnAddress(address) {
         let start = address.sub(offset);
         try {
             const insn = Instruction.parse(start);
-            if (insn.mnemonic === "call") {
+            /* The instruction must *end* at the address.
+             *
+             * Checking only the mnemonic was wrong: a call somewhere before the address
+             * passes, even though it does not hand control to the address. A return
+             * address is precisely where a call's length lands, so compare
+             * start + size against the address itself. */
+            if (insn.mnemonic === "call" &&
+                start.add(insn.size).equals(address)) {
                 return true;
             }
         } catch (e) {
@@ -3555,9 +3562,15 @@ function stage1TakeLandmark(snapshot, label) {
     stage1.retCandidates = candidates;
     stage1Log("sub1-lic-page-access", label + " pc=" + snapshot.pc + " " +
         candidates.slice(0, 12).map(function (candidate) {
+            /* The (ret) tag is the one that matters: a slot is only worth hooking if
+             * a call ends exactly at that address. Round 86 showed 6 of 6 candidates
+             * failing that test on every landmark, so the tag now rides on the same
+             * line as the value and the offset, and the next log says which slot --
+             * if any -- is the real return address. */
             return "[" + stage1CandidateLabel(candidate) + "]=" +
                 candidate.value + (candidate.inModule ? " (code)" : "") +
-                (candidate.sameRange ? " (same-range)" : "");
+                (candidate.sameRange ? " (same-range)" : "") +
+                (stage1IsReturnAddress(ptr(candidate.value)) ? " (ret)" : "");
         }).join(" "));
     /* The guard bit is already cleared by the OS, so the instruction will
      * succeed on retry; no re-protect is needed. */
