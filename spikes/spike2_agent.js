@@ -2335,6 +2335,20 @@ function stage1KeyMaterial() {
         });
         if (pages.length > 0) {
             let keyAccesses = 0;
+            /* Record the pcs only.
+             *
+             * Round 96 tried to Interceptor.attach from inside this callback, deferred
+             * by a tick, and the monitor stopped arming altogether -- the round-95 log
+             * has key-monitor-armed and five key-access lines, the round-96 log has
+             * neither. Doing Frida API work from a MemoryAccessMonitor callback is not
+             * safe, and this is the proof.
+             *
+             * So the callback only writes to a plain object. attachPendingKeyHooks()
+             * then attaches from an Interceptor callback, which is a safe place, and
+             * the pcs still come from the monitor -- which is the part that worked. */
+            plan.keyAccessPcs = plan.keyAccessPcs || {};
+            plan.keyHookedPcs = plan.keyHookedPcs || {};
+            plan.keyHookLogs = 0;
             MemoryAccessMonitor.enable(pages, {
                 onAccess: function (details) {
                     if (keyAccesses >= 24) {
@@ -2345,6 +2359,7 @@ function stage1KeyMaterial() {
                         " addr=" + details.address +
                         " from=" + details.from +
                         " page=" + details.pageIndex);
+                    plan.keyAccessPcs[details.from.toString()] = true;
                 }
             });
             stage1Log("key-monitor-armed", pages.length + " key pages: " +
@@ -2962,10 +2977,82 @@ function stage1CallWatch(context, site) {
     }, 0);
 }
 
+/* Attach hooks to the pcs the key monitor reported.
+ *
+ * The monitor callback only records addresses into plan.keyAccessPcs, because doing
+ * Frida API work from inside a MemoryAccessMonitor callback silently stops the monitor
+ * from arming (round 96: key-monitor-armed and key-access both vanished). This runs from
+ * an Interceptor onEnter instead, where attaching is safe and well-tested.
+ *
+ * The hook exists to supply what the monitor cannot: the register context at the
+ * instruction that touches a key. rcx/rdx/r8/r9 are fingerprinted with looksLikeKeyMpInt,
+ * so the register holding a real mp_int identifies the RSA argument and this pc is the
+ * call site -- the thing every stack-based attempt failed to locate. */
+function attachPendingKeyHooks() {
+    const stage1 = plan.stage1;
+    if (stage1 === undefined || stage1 === null) {
+        return;
+    }
+    const pending = plan.keyAccessPcs;
+    if (pending === undefined || pending === null) {
+        return;
+    }
+    if (plan.keyHookedPcs === undefined || plan.keyHookedPcs === null) {
+        plan.keyHookedPcs = {};
+    }
+    for (const address in pending) {
+        if (pending[address] !== true || plan.keyHookedPcs[address] === true) {
+            continue;
+        }
+        plan.keyHookedPcs[address] = true;
+        try {
+            plan.hooks.push(Interceptor.attach(ptr(address), {
+                onEnter: function () {
+                    if (plan.keyHookLogs >= 12) {
+                        return;
+                    }
+                    plan.keyHookLogs++;
+                    const c = this.context;
+                    let args = "";
+                    [["rcx", c.rcx], ["rdx", c.rdx],
+                     ["r8", c.r8], ["r9", c.r9]].forEach(function (pair) {
+                        if (pair[1] === undefined) {
+                            return;
+                        }
+                        let shape = "";
+                        try {
+                            const looks = looksLikeKeyMpInt(pair[1]);
+                            if (looks !== null) {
+                                shape = " MPINT{used=" + looks.used +
+                                    " alloc=" + looks.alloc + "}";
+                            }
+                        } catch (e) {
+                            /* not an mp_int */
+                        }
+                        args += " " + pair[0] + "=" + pair[1] + shape;
+                    });
+                    stage1Log("key-hook", "pc=" + address + args +
+                        " rsp=" + c.rsp);
+                }
+            }));
+            stage1Log("key-hook-armed", address);
+        } catch (e) {
+            stage1Log("key-hook-failed", address + ": " + String(e));
+        }
+    }
+}
+
 function stage1CallCandidate(context, destination) {
     const stage1 = plan.stage1;
     if (!stage1.active || stage1.sub < 3 || stage1.sub === 6) {
         return;
+    }
+    /* Safe context for attaching: this is an Interceptor onEnter, and the monitor has
+     * usually already reported the key pcs by the time a call candidate fires. */
+    try {
+        attachPendingKeyHooks();
+    } catch (e) {
+        stage1Log("key-hook-scan-failed", String(e));
     }
     /* A hooked return address was actually reached, so this path owns Stage 1;
      * the call watcher stands down to avoid counting the same calls twice. */
@@ -3858,6 +3945,14 @@ function stage1TakeLandmark(snapshot, label) {
                             }
                             plan.stage1.retSlotOffset = slotLabel;
                             plan.stage1.retToRsa = address.toString();
+                            /* Earliest frequent Interceptor context: attach the key
+                             * hooks here too, in case the sub3/sub4 path is never
+                             * reached. */
+                            try {
+                                attachPendingKeyHooks();
+                            } catch (e) {
+                                stage1Log("key-hook-scan-failed", String(e));
+                            }
                             stage1BackInRsaExptmod(this.context);
                         } catch (e) {
                             stage1Log("sub2-error", String(e));
