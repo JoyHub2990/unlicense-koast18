@@ -2326,6 +2326,54 @@ function stage1KeyMaterial() {
      * right there. Log entry unconditionally, before anything can throw, and refuse to
      * arm twice: MemoryAccessMonitor.enable on an already-monitored range throws, and
      * stage1KeyMaterial can run more than once per attempt. */
+    /* Guard the key pages instead of monitoring them.
+     *
+     * The monitor is out (it takes the agent down, see below). A PAGE_GUARD is the same
+     * mechanism Stage 1's licence landmark uses, so it is known to work here, and it does
+     * not contend with Stage 2's MemoryAccessMonitor. What makes it the right tool for
+     * this job is where it fires: the licence page is read through ntdll, so that
+     * landmark's stack belongs to ntdll frames and the return addresses there never reach
+     * the protection's own code. The key structs are touched by the protection itself, so
+     * the stack at a key-page hit carries the protection's frames -- and the exception
+     * carries the full register context, which is what the monitor could never give. */
+    try {
+        const guardPages = [];
+        const seenGuard = {};
+        [stage1.mpInts.key1.exp, stage1.mpInts.key1.mod,
+         stage1.mpInts.key2.exp, stage1.mpInts.key2.mod].forEach(function (entry) {
+            if (entry === undefined || entry === null || entry.struct === null) {
+                return;
+            }
+            const base = entry.struct.and(ptr("0xfffffffffffff000"));
+            const key = base.toString();
+            if (seenGuard[key] === true) {
+                return;
+            }
+            seenGuard[key] = true;
+            guardPages.push(base);
+        });
+        let armed = 0;
+        for (const base of guardPages) {
+            const old = Memory.alloc(4);
+            try {
+                if (getVirtualProtect()(base, 0x1000,
+                    PAGE_READWRITE | PAGE_GUARD, old) !== 0) {
+                    armed++;
+                }
+            } catch (e) {
+                /* leave it unarmed */
+            }
+        }
+        plan.keyGuardPages = guardPages;
+        plan.keyGuardArmed = armed > 0;
+        stage1Log("key-guard-armed", armed + " of " + guardPages.length +
+            " key pages: " + guardPages.map(function (b) {
+                return b.toString();
+            }).join(" "));
+    } catch (e) {
+        stage1Log("key-guard-failed", String(e));
+    }
+
     /* The key-page monitor is OFF by default, because it kills the agent.
      *
      * Round 99 settled what rounds 96 and 98 only hinted at: the log stops dead at
@@ -3625,6 +3673,78 @@ function stage1OpenWindow() {
     }, 2000);
 }
 
+/* The protection touched one of the key structs: name the code that did it.
+ *
+ * This is the landmark the whole Stage 1 hunt has been missing. The licence-page guard
+ * fires inside ntdll, so its stack is ntdll's and every candidate return address found
+ * there leads to calls that are not mp_exptmod (rounds 92/100: sub4-no-key-match on all of
+ * them). The key structs are read and written by the protection's own crypto, so this
+ * fault carries the protection's frames on the stack and the full register context in the
+ * exception -- pc, sp and every argument register.
+ *
+ * Log what the stack holds with the return-address test applied, so the next log says
+ * which frame is which, and clear the guard so the page can be used normally. */
+function stage1OnKeyPageAccess(details) {
+    if (plan.keyGuardArmed !== true) {
+        return false;
+    }
+    const pages = plan.keyGuardPages;
+    if (pages === undefined || pages === null || pages.length === 0) {
+        return false;
+    }
+    const memory = details.memory || null;
+    let address = memory !== null && memory.address !== undefined
+        ? memory.address : details.address;
+    if (address === undefined || address === null) {
+        return false;
+    }
+    let hit = null;
+    for (const base of pages) {
+        if (address.compare(base) >= 0 &&
+            address.compare(base.add(0x1000)) < 0) {
+            hit = base;
+            break;
+        }
+    }
+    if (hit === null) {
+        return false;
+    }
+    /* Clear this page's guard so the access can proceed. */
+    try {
+        const old = Memory.alloc(4);
+        getVirtualProtect()(hit, 0x1000, PAGE_READWRITE, old);
+    } catch (e) {
+        /* it will fault again; the log below still names the frame */
+    }
+    try {
+        const context = details.context || {};
+        const pc = context.pc !== undefined ? context.pc : context[PC_REG];
+        const sp = context.sp !== undefined ? context.sp : context[SP_REG];
+        const slots = [];
+        if (sp !== undefined && sp !== null) {
+            for (let offset = 0; offset <= 0x800; offset += Process.pointerSize) {
+                let value = null;
+                try {
+                    value = sp.add(offset).readPointer();
+                } catch (e) {
+                    break;
+                }
+                if (stage1IsReturnAddress(value)) {
+                    slots.push("[sp+" + offset.toString(16) + "]=" + value);
+                }
+            }
+        }
+        stage1Log("key-guard-hit", "page=" + hit + " addr=" + address +
+            " pc=" + pc + " rcx=" + context.rcx + " rdx=" + context.rdx +
+            " r8=" + context.r8 + " r9=" + context.r9 +
+            " sp=" + sp + " returns: " + (slots.length > 0
+                ? slots.slice(0, 10).join(" ") : "none"));
+    } catch (e) {
+        stage1Log("key-guard-log-failed", String(e));
+    }
+    return true;
+}
+
 function stage1OnLicensePageAccess(details) {
     const stage1 = plan.stage1;
     if (!stage1.active) {
@@ -4379,6 +4499,9 @@ rpc.exports = {
                             : "none"));
                 }
                 if (hwBreakOnException(plan, details)) {
+                    return true;
+                }
+                if (stage1OnKeyPageAccess(details)) {
                     return true;
                 }
                 if (stage2OnGuardAccess(details)) {
