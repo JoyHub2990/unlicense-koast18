@@ -2326,6 +2326,24 @@ function stage1KeyMaterial() {
      * right there. Log entry unconditionally, before anything can throw, and refuse to
      * arm twice: MemoryAccessMonitor.enable on an already-monitored range throws, and
      * stage1KeyMaterial can run more than once per attempt. */
+    /* The key-page monitor is OFF by default, because it kills the agent.
+     *
+     * Round 99 settled what rounds 96 and 98 only hinted at: the log stops dead at
+     * key-monitor-enter. No key-monitor-armed, no key-monitor-failed, and not one line of
+     * the sub3/sub4 traffic that continues for the rest of an attempt -- the agent is gone
+     * from that point. MemoryAccessMonitor.enable on the key pages takes it down. The
+     * rounds where it did arm (95, 97) are the exception, and the likely cause is that
+     * Stage 2 arms a MemoryAccessMonitor of its own on the dec_lic buffer: only one can be
+     * active, and the conflict is timing-dependent.
+     *
+     * A diagnostic that can kill the attempt is worse than no diagnostic, so it stays
+     * behind this flag. The addresses it produced are recorded in the handoff, and the
+     * same information is better obtained with a PAGE_GUARD on the key pages, which is
+     * the mechanism Stage 1's landmark already uses and which supplies the full exception
+     * context -- registers included -- rather than just a pc. */
+    if (plan.keyPageMonitor !== true) {
+        return stage1.mpInts;
+    }
     stage1Log("key-monitor-enter", "armed=" + plan.keyMonitorArmed +
         " structs=" + [stage1.mpInts.key1.exp, stage1.mpInts.key1.mod,
                        stage1.mpInts.key2.exp, stage1.mpInts.key2.mod].map(
