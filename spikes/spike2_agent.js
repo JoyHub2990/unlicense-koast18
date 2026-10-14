@@ -2326,16 +2326,22 @@ function stage1KeyMaterial() {
      * right there. Log entry unconditionally, before anything can throw, and refuse to
      * arm twice: MemoryAccessMonitor.enable on an already-monitored range throws, and
      * stage1KeyMaterial can run more than once per attempt. */
-    /* Guard the key pages instead of monitoring them.
+    /* Record the key pages; do NOT touch Frida from here.
      *
-     * The monitor is out (it takes the agent down, see below). A PAGE_GUARD is the same
-     * mechanism Stage 1's licence landmark uses, so it is known to work here, and it does
-     * not contend with Stage 2's MemoryAccessMonitor. What makes it the right tool for
-     * this job is where it fires: the licence page is read through ntdll, so that
-     * landmark's stack belongs to ntdll frames and the return addresses there never reach
-     * the protection's own code. The key structs are touched by the protection itself, so
-     * the stack at a key-page hit carries the protection's frames -- and the exception
-     * carries the full register context, which is what the monitor could never give. */
+     * Rounds 96, 98, 99 and 101 all end the same way: keys-materialised is logged and
+     * then there is silence -- no key-monitor-armed, no key-guard-armed, no error from
+     * either catch. Three different APIs (MemoryAccessMonitor.enable, Interceptor.attach
+     * via setTimeout, VirtualProtect) each killed the agent at this exact point.
+     *
+     * The common factor is not the API, it is the call site: stage1KeyMaterial runs from
+     * stage1CallCandidate, an Interceptor onEnter on the target's own thread inside the
+     * protection's code. The emit gets out because it is queued, and the next Frida call
+     * takes the agent down before anything else can be logged.
+     *
+     * So this function only writes a plain array. The guard is armed by a timer on
+     * Frida's own thread -- the same pattern that fixed the hook-attach race in round 98,
+     * and a context where VirtualProtect is already known to work, since startStage1
+     * calls armGuard from it. */
     try {
         const guardPages = [];
         const seenGuard = {};
@@ -2352,26 +2358,13 @@ function stage1KeyMaterial() {
             seenGuard[key] = true;
             guardPages.push(base);
         });
-        let armed = 0;
-        for (const base of guardPages) {
-            const old = Memory.alloc(4);
-            try {
-                if (getVirtualProtect()(base, 0x1000,
-                    PAGE_READWRITE | PAGE_GUARD, old) !== 0) {
-                    armed++;
-                }
-            } catch (e) {
-                /* leave it unarmed */
-            }
-        }
         plan.keyGuardPages = guardPages;
-        plan.keyGuardArmed = armed > 0;
-        stage1Log("key-guard-armed", armed + " of " + guardPages.length +
-            " key pages: " + guardPages.map(function (b) {
+        stage1Log("key-guard-pages", guardPages.length + " pages queued: " +
+            guardPages.map(function (b) {
                 return b.toString();
             }).join(" "));
     } catch (e) {
-        stage1Log("key-guard-failed", String(e));
+        stage1Log("key-guard-page-error", String(e));
     }
 
     /* The key-page monitor is OFF by default, because it kills the agent.
@@ -3620,6 +3613,41 @@ function disarmGuard() {
     stage1.guardArmed = false;
 }
 
+/* Arm PAGE_GUARD on the key struct pages, from a timer.
+ *
+ * stage1KeyMaterial only records the pages, because every Frida call made from that
+ * function killed the agent (rounds 96, 98, 99, 101: keys-materialised logged, then
+ * silence, whatever the API). This runs on Frida's own thread instead, where VirtualProtect
+ * is already known to work -- startStage1 arms the licence guard from the same place. */
+function armPendingKeyGuards() {
+    if (plan.keyGuardArmed === true) {
+        return;
+    }
+    const pages = plan.keyGuardPages;
+    if (pages === undefined || pages === null || pages.length === 0) {
+        return;
+    }
+    let armed = 0;
+    for (const base of pages) {
+        try {
+            const old = Memory.alloc(4);
+            if (getVirtualProtect()(base, 0x1000,
+                PAGE_READWRITE | PAGE_GUARD, old) !== 0) {
+                armed++;
+            }
+        } catch (e) {
+            /* leave it unarmed */
+        }
+    }
+    if (armed > 0) {
+        plan.keyGuardArmed = true;
+        stage1Log("key-guard-armed", armed + " of " + pages.length +
+            " key pages: " + pages.map(function (b) {
+                return b.toString();
+            }).join(" "));
+    }
+}
+
 /* Trace for a bounded stretch, starting from the licence read.
  *
  * The transform is what makes Stage 1's landmark findable, and it is also what
@@ -4191,6 +4219,20 @@ function startStage1(licCopy) {
     const stage1 = plan.stage1;
     stage1.active = true;
     stage1.sub = 1;
+    /* Drain the key-page guard queue from here.
+     *
+     * This runs on Frida's own thread, which is where VirtualProtect is known to work --
+     * stage1KeyMaterial cannot do it, see armPendingKeyGuards. The timer is cheap and
+     * idle until keys-materialised fills plan.keyGuardPages. */
+    if (plan.keyGuardTimer === undefined || plan.keyGuardTimer === null) {
+        plan.keyGuardTimer = setInterval(function () {
+            try {
+                armPendingKeyGuards();
+            } catch (e) {
+                /* armPendingKeyGuards reports its own failures */
+            }
+        }, 25);
+    }
     stage1.preRsaBuf = ptr(licCopy);
     stage1.decSections = Math.floor(plan.licSize / 0x80);
     /* Guard the page holding the license copy: the first read of it is
