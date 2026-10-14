@@ -2317,6 +2317,26 @@ function stage1KeyMaterial() {
      * instruction. So the first read of a key page names the code that reads the key,
      * which is the code we have been failing to locate. Logged, capped, and never
      * allowed to throw into the protection's own path. */
+    /* Say whether the monitor block is even entered, and guard against re-arming.
+     *
+     * Rounds 95 and 97 logged key-monitor-armed and key-access; rounds 96 and 98 logged
+     * neither, with the same code path and keys-materialised firing either way. stage1Log
+     * has no dedupe or cap, and there is no return between the two, so the only way the
+     * arm line can be missing is an exception -- and the catch that would report it is
+     * right there. Log entry unconditionally, before anything can throw, and refuse to
+     * arm twice: MemoryAccessMonitor.enable on an already-monitored range throws, and
+     * stage1KeyMaterial can run more than once per attempt. */
+    stage1Log("key-monitor-enter", "armed=" + plan.keyMonitorArmed +
+        " structs=" + [stage1.mpInts.key1.exp, stage1.mpInts.key1.mod,
+                       stage1.mpInts.key2.exp, stage1.mpInts.key2.mod].map(
+            function (entry) {
+                return entry === undefined || entry === null ? "null" :
+                    String(entry.struct);
+            }).join(","));
+    if (plan.keyMonitorArmed === true) {
+        return stage1.mpInts;
+    }
+    plan.keyMonitorArmed = true;
     try {
         const pages = [];
         const seenPage = {};
