@@ -2335,6 +2335,23 @@ function stage1KeyMaterial() {
         });
         if (pages.length > 0) {
             let keyAccesses = 0;
+            /* The pcs that touch a key, collected as the monitor reports them.
+             *
+             * Round 95 armed this and got exactly what it was for:
+             *
+             *   key-access op=read  addr=0x2472a88 from=0x7ffdfe35a67a
+             *   key-access op=read  addr=0x24671e8 from=0x7ffdfe3fed58
+             *   key-access op=write addr=0x2486d40 from=0x7ffdfe345ce0
+             *
+             * Those from addresses are the code that manipulates the RSA keys, and they
+             * are not in the range the stack scan keeps producing (round 95's
+             * sub4-no-key-match targets are 0x7ffe3c6...). So hook them: the monitor
+             * says *where* the key is touched, the hook then supplies the register
+             * context at that instruction, which is what stage1CallCandidate needs to
+             * fingerprint the arguments. Attaching is deferred by a tick because this
+             * callback runs from the monitor itself. */
+            plan.keyAccessPcs = plan.keyAccessPcs || {};
+            plan.keyHookLogs = 0;
             MemoryAccessMonitor.enable(pages, {
                 onAccess: function (details) {
                     if (keyAccesses >= 24) {
@@ -2345,6 +2362,51 @@ function stage1KeyMaterial() {
                         " addr=" + details.address +
                         " from=" + details.from +
                         " page=" + details.pageIndex);
+                    const from = details.from.toString();
+                    if (plan.keyAccessPcs[from] === true) {
+                        return;
+                    }
+                    plan.keyAccessPcs[from] = true;
+                    setTimeout(function () {
+                        try {
+                            plan.hooks.push(Interceptor.attach(ptr(from), {
+                                onEnter: function () {
+                                    if (plan.keyHookLogs >= 12) {
+                                        return;
+                                    }
+                                    plan.keyHookLogs++;
+                                    const c = this.context;
+                                    let args = "";
+                                    [["rcx", c.rcx], ["rdx", c.rdx],
+                                     ["r8", c.r8], ["r9", c.r9]].forEach(
+                                        function (pair) {
+                                            if (pair[1] === undefined) {
+                                                return;
+                                            }
+                                            let shape = "";
+                                            try {
+                                                const looks = looksLikeKeyMpInt(
+                                                    pair[1]);
+                                                if (looks !== null) {
+                                                    shape = " MPINT{used=" +
+                                                        looks.used + " alloc=" +
+                                                        looks.alloc + "}";
+                                                }
+                                            } catch (e) {
+                                                /* not an mp_int */
+                                            }
+                                            args += " " + pair[0] + "=" + pair[1] +
+                                                shape;
+                                        });
+                                    stage1Log("key-hook", "pc=" + from + args +
+                                        " rsp=" + c.rsp);
+                                }
+                            }));
+                            stage1Log("key-hook-armed", from);
+                        } catch (e) {
+                            stage1Log("key-hook-failed", from + ": " + String(e));
+                        }
+                    }, 0);
                 }
             });
             stage1Log("key-monitor-armed", pages.length + " key pages: " +
