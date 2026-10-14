@@ -2366,6 +2366,25 @@ function stage1KeyMaterial() {
                 pages.map(function (p) {
                     return p.base.toString();
                 }).join(" "));
+            /* Drain the pending pcs on a timer.
+             *
+             * Round 97 attached the hooks correctly (key-hook-armed 9) and none of them
+             * ever fired: the key pages are touched in one burst at 1.8s and the attach
+             * was deferred to the next Interceptor onEnter, so by the time the hooks
+             * existed there was nothing left to catch.
+             *
+             * A timer runs on Frida's own thread -- neither the monitor callback (which
+             * round 96 proved must stay pure JS) nor the target's thread -- so attaching
+             * from here is both safe and prompt. 5ms keeps the gap well below the burst. */
+            if (plan.keyHookTimer === undefined || plan.keyHookTimer === null) {
+                plan.keyHookTimer = setInterval(function () {
+                    try {
+                        attachPendingKeyHooks();
+                    } catch (e) {
+                        stage1Log("key-hook-scan-failed", String(e));
+                    }
+                }, 5);
+            }
         }
     } catch (e) {
         stage1Log("key-monitor-failed", String(e));
